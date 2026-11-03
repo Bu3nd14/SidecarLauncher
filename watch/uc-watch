@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# uc-watch — read-only recorder for Universal Control / Sidecar failures.
+#
+# Writes one merged timeline (logs/timeline.log) from three sources:
+#   1. the unified log (UniversalControl drops, Sidecar session events)  tags UC, SC
+#   2. a 10 s poll of lid, displays, Wi-Fi, AWDL, power, vdisp            tags LID, DISP, NET, PWR, VDISP, HB
+#   3. a tail of tools/logs/sidecar.log (what `sidecar up/down` did)      tag  TOOL
+#
+# It never configures displays, never talks to SidecarCore, never touches the
+# network: it only reads. Analyse the result with uc-analyze.
+set -uo pipefail
+
+WATCH_HOME="${WATCH_HOME:-$HOME/sidecar-watch}"
+TOOLS="${TOOLS:-$HOME/SidecarLauncher/tools}"
+POLL="${POLL:-10}"
+HEARTBEAT="${HEARTBEAT:-300}"
+MAX_BYTES="${MAX_BYTES:-20000000}"
+
+LIB="$WATCH_HOME/lib"
+SNAP="$WATCH_HOME/bin/snap"
+LOGS="$WATCH_HOME/logs"
+TL="$LOGS/timeline.log"
+TOOL_LOG="$TOOLS/logs/sidecar.log"
+
+mkdir -p "$LOGS"
+
+now() { date '+%Y-%m-%dT%H:%M:%S'; }
+
+# emit TAG KIND MESSAGE — reopen the file on every line so rotation is safe.
+emit() { printf '%s\t%s\t%s\t%s\n' "$(now)" "$1" "$2" "$3" >>"$TL"; }
+
+rotate() {
+  local size
+  size=$(stat -f %z "$TL" 2>/dev/null || echo 0)
+  if [ "$size" -gt "$MAX_BYTES" ]; then
+    mv -f "$TL" "$LOGS/timeline.1.log"
+    emit WATCH ROTATED "previous timeline moved to timeline.1.log ($size bytes)"
+  fi
+}
+
+# --- 1. unified log -----------------------------------------------------------
+stream_unified() {
+  /usr/bin/log stream --style ndjson --level info --predicate "$PREDICATE" 2>>"$LOGS/watch.err" \
+    | /usr/bin/jq --unbuffered -R -r -f "$LIB/events.jq" 2>>"$LOGS/watch.err" \
+    | while IFS=$'\t' read -r ts tag kind msg; do
+        # Name the process that asked for a connect/disconnect while it is still alive:
+        # SidecarLauncher means our tools, ControlCenter means a click.
+        if [ "$kind" = CONNECT-REQ ] || [ "$kind" = DISCONNECT-REQ ]; then
+          pid=$(printf '%s' "$msg" | sed -n 's/.*(PID \([0-9][0-9]*\)).*/\1/p')
+          by=""
+          [ -n "$pid" ] && by=$(ps -o comm= -p "$pid" 2>/dev/null | awk -F/ '{print $NF}')
+          msg="$msg by=${by:-gone}"
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$ts" "$tag" "$kind" "$msg" >>"$TL"
+      done
+}
+
+# --- 2. state poll ------------------------------------------------------------
+lid_state() {
+  case "$(ioreg -r -k AppleClamshellState 2>/dev/null)" in
+    *'"AppleClamshellState" = Yes'*) echo closed ;;
+    *'"AppleClamshellState" = No'*) echo open ;;
+    *) echo unknown ;;
+  esac
+}
+
+# Display line reduced to what matters for UC: who is there, who is main, who mirrors whom.
+disp_state() {
+  "$SNAP" 2>/dev/null | awk '/^display /{
+      for (i = 2; i <= NF; i++) { split($i, kv, "="); f[kv[1]] = kv[2] }
+      role = (f["vendor"] == "0x6161706c") ? "sidecar" : (f["vendor"] == "0x5644") ? "virtual" : (f["builtin"] == "true") ? "builtin" : f["vendor"]
+      printf "%s#%s%s%s ", role, f["id"], (f["main"] == "true" ? "*main" : ""), (f["mirror_of"] != "0" ? ">" f["mirror_of"] : "")
+    }'
+}
+
+net_state() {
+  local wifi awdl
+  wifi=$("$SNAP" 2>/dev/null | awk '/^wifi /{print $2, $3, $4}')
+  awdl=$(ifconfig awdl0 2>/dev/null | awk '/status:/{print $2}')
+  printf '%s awdl=%s' "${wifi:-wifi=?}" "${awdl:-?}"
+}
+
+pwr_state() {
+  pmset -g batt 2>/dev/null | sed -n "s/^Now drawing from '\(.*\)'\$/\1/p"
+}
+
+vdisp_state() {
+  local p
+  p=$(pgrep -x vdisp 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+  printf 'pids=%s' "${p:-none}"
+}
+
+poll_state() {
+  local lid="" disp="" net="" pwr="" vd="" v last_hb=0 t
+  while :; do
+    v=$(lid_state);   [ "$v" != "$lid" ]  && { emit LID  "$v"      "lid=$v (was ${lid:-start})"; lid=$v; }
+    v=$(disp_state);  [ "$v" != "$disp" ] && { emit DISP CHANGED   "$v"; disp=$v; }
+    v=$(net_state);   [ "$v" != "$net" ]  && { emit NET  CHANGED   "$v"; net=$v; }
+    v=$(pwr_state);   [ "$v" != "$pwr" ]  && { emit PWR  CHANGED   "${v:-?}"; pwr=$v; }
+    v=$(vdisp_state); [ "$v" != "$vd" ]   && { emit VDISP CHANGED  "$v"; vd=$v; }
+    t=$(date +%s)
+    if [ $((t - last_hb)) -ge "$HEARTBEAT" ]; then
+      rssi=$("$SNAP" 2>/dev/null | sed -n 's/.*rssi=\(-*[0-9]*\).*/\1/p')
+      emit HB ALIVE "lid=$lid disp=[$disp] net=[$net] rssi=${rssi:-?} pwr=$pwr vdisp=$vd"
+      last_hb=$t
+      rotate
+    fi
+    sleep "$POLL"
+  done
+}
+
+# --- 3. what the tools did ----------------------------------------------------
+tail_tools() {
+  # Wait for the file instead of failing: the tools may be reinstalled.
+  while [ ! -f "$TOOL_LOG" ]; do sleep 30; done
+  tail -n 0 -F "$TOOL_LOG" 2>/dev/null | /usr/bin/awk -v out="$TL" -f "$LIB/toolline.awk"
+}
+
+# --- main ---------------------------------------------------------------------
+for need in "$SNAP" "$LIB/events.jq" "$LIB/toolline.awk" "$LIB/predicate" /usr/bin/jq; do
+  [ -e "$need" ] || { echo "uc-watch: missing $need (run watch/install.sh)" >&2; exit 1; }
+done
+PREDICATE="$(cat "$LIB/predicate")"
+
+# Bash 3.2 compatible (launchd runs /bin/bash): no `wait -n`, explicit tree kill.
+kill_tree() {
+  local p c
+  for p in "$@"; do
+    for c in $(pgrep -P "$p" 2>/dev/null); do kill_tree "$c"; done
+    kill -TERM "$p" 2>/dev/null
+  done
+}
+
+PIDS=""
+stop() {
+  emit WATCH STOP "pid $$ ($1)"
+  # shellcheck disable=SC2086
+  kill_tree $PIDS
+  exit "${2:-0}"
+}
+trap 'stop signal 0' TERM INT
+
+emit WATCH START "pid $$ tools=$TOOLS poll=${POLL}s"
+
+stream_unified & PIDS="$PIDS $!"
+poll_state &     PIDS="$PIDS $!"
+tail_tools &     PIDS="$PIDS $!"
+
+# If one source dies, stop everything so launchd (KeepAlive) restarts all three together.
+while :; do
+  sleep 30 &
+  wait $! 2>/dev/null
+  for p in $PIDS; do
+    kill -0 "$p" 2>/dev/null || stop "source $p exited" 1
+  done
+done

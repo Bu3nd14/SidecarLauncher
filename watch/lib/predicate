@@ -1,0 +1,1 @@
+(process == "UniversalControl" AND (eventMessage CONTAINS "Peer appears missing" OR eventMessage CONTAINS "kNetworkErr -> kConnectionErr" OR eventMessage CONTAINS "Display Sleep Assertion")) OR (subsystem == "com.apple.sidecar" AND (eventMessage BEGINSWITH "===" OR eventMessage CONTAINS "SidecarErrorDomain" OR eventMessage CONTAINS "Terminated with Active Sessions"))

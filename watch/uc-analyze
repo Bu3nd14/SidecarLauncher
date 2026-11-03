@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# uc-analyze — classify every Universal Control drop by what happened just before it.
+#
+#   uc-analyze                         the recorded timeline (~/sidecar-watch/logs)
+#   uc-analyze FILE...                 explicit timeline files
+#   uc-analyze --from-system START END rebuild a timeline from the unified log and
+#                                      tools/logs/sidecar.log (no lid/display/Wi-Fi
+#                                      snapshots: those exist only in a recording)
+#   options: --window N   seconds looked back before a drop (default 15)
+#            --verbose    print every event inside each window
+#
+# Read-only. START/END as 'YYYY-MM-DD HH:MM:SS'.
+set -uo pipefail
+
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do SELF="$(readlink "$SELF")"; done
+DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
+if [ -d "$DIR/lib" ]; then LIB="$DIR/lib"; else LIB="$DIR/../lib"; fi
+
+WATCH_HOME="${WATCH_HOME:-$HOME/sidecar-watch}"
+TOOLS="${TOOLS:-$HOME/SidecarLauncher/tools}"
+WINDOW=15
+VERBOSE=0
+FROM=""; TO=""
+FILES=()
+
+usage() { sed -n '2,13p' "$SELF" | sed 's/^# \{0,1\}//'; }
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --window) WINDOW="$2"; shift 2 ;;
+    --verbose|-v) VERBOSE=1; shift ;;
+    --from-system) FROM="$2"; TO="$3"; shift 3 ;;
+    *) FILES+=("$1"); shift ;;
+  esac
+done
+
+timeline() {
+  if [ -n "$FROM" ]; then
+    /usr/bin/log show --style ndjson --info --start "$FROM" --end "$TO" \
+        --predicate "$(cat "$LIB/predicate")" 2>/dev/null \
+      | /usr/bin/jq -R -r -f "$LIB/events.jq"
+    if [ -f "$TOOLS/logs/sidecar.log" ]; then
+      /usr/bin/awk -v from="${FROM/ /T}" -v to="${TO/ /T}" -f "$LIB/toolline.awk" "$TOOLS/logs/sidecar.log"
+    fi
+    return
+  fi
+  if [ "${#FILES[@]}" -eq 0 ]; then
+    for f in "$WATCH_HOME/logs/timeline.1.log" "$WATCH_HOME/logs/timeline.log"; do
+      [ -f "$f" ] && FILES+=("$f")
+    done
+  fi
+  [ "${#FILES[@]}" -gt 0 ] || { echo "uc-analyze: no timeline found in $WATCH_HOME/logs" >&2; exit 1; }
+  cat "${FILES[@]}"
+}
+
+# sort -s keeps the original order of lines with the same second (stream order).
+timeline | LC_ALL=C sort -s -t "$(printf '\t')" -k1,1 | /usr/bin/awk -F '\t' \
+  -v W="$WINDOW" -v VERBOSE="$VERBOSE" -v SYSTEM="$([ -n "$FROM" ] && echo 1 || echo 0)" '
+function epoch(ts,   y, m, d, H, M, S, era, yoe, doy, doe) {
+  # days-from-civil (no mktime in macOS awk); only differences matter here
+  y = substr(ts, 1, 4) + 0; m = substr(ts, 6, 2) + 0; d = substr(ts, 9, 2) + 0
+  H = substr(ts, 12, 2) + 0; M = substr(ts, 15, 2) + 0; S = substr(ts, 18, 2) + 0
+  if (m <= 2) y--
+  era = int(y / 400); yoe = y - era * 400
+  doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1
+  doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+  return ((era * 146097 + doe) * 86400) + H * 3600 + M * 60 + S
+}
+# priority of a candidate cause: higher wins inside the window
+function cause_of(i,   t, k, m) {
+  t = tag[i]; k = kind[i]; m = msg[i]
+  if (t == "TOOL" && k == "CONNECT") return "100 tool-connect"
+  if (t == "TOOL" && k == "DISCONNECT") return "100 tool-disconnect"
+  if (t == "SC" && k == "CONNECT-REQ") return (m ~ /by=(SidecarLauncher|gone)/ ? "95 tool-connect" : "90 sidecar-manual-connect")
+  if (t == "SC" && k == "DISCONNECT-REQ") return (m ~ /by=(SidecarLauncher|gone)/ ? "95 tool-disconnect" : "90 sidecar-manual-disconnect")
+  if (t == "LID") return "80 lid-" k
+  if (t == "SC" && k == "SLEEP-DISCONNECT") return "75 display-sleep"
+  if (t == "SC" && (k == "CLOSED" || k == "RELAY-TERMINATED")) return "70 sidecar-closed"
+  if (t == "SC" && k == "RECONNECTING") return "65 sidecar-reconnecting"
+  if (t == "VDISP") return "60 vdisp-changed"
+  if (t == "DISP" || (t == "SC" && k == "HW-CHANGED")) return "50 display-topology"
+  if (t == "NET") return "40 wifi/awdl"
+  if (t == "PWR") return "30 power"
+  return ""
+}
+{
+  n++; ts[n] = $1; tag[n] = $2; kind[n] = $3; msg[n] = $4; e[n] = epoch($1)
+}
+END {
+  if (n == 0) { print "no events"; exit 1 }
+  lid = (SYSTEM ? "n/a" : "unknown"); uc = "unknown"
+  inc = 0; last_drop = -1e18
+  for (i = 1; i <= n; i++) {
+    if (tag[i] == "LID") lid = kind[i]
+    if (tag[i] == "UC" && kind[i] == "ACTIVE") uc = "in-use"
+    if (tag[i] == "UC" && kind[i] == "IDLE") uc = "idle"
+    if (tag[i] == "SC") sc[kind[i]]++
+    if (tag[i] == "TOOL" && (kind[i] == "CONNECT" || kind[i] == "DISCONNECT")) tools[kind[i]]++
+    if (!(tag[i] == "UC" && kind[i] == "DROP")) continue
+    # several "Peer appears missing" a few seconds apart are one incident
+    if (e[i] - last_drop <= 5) { last_drop = e[i]; continue }
+    last_drop = e[i]
+    inc++
+    best = ""; bestp = -1; bestdt = 0; also = ""
+    # look back W seconds, and 2 s ahead for lines logged after the action completed
+    for (j = i - 1; j >= 1 && e[i] - e[j] <= W; j--) consider(j)
+    for (j = i + 1; j <= n && e[j] - e[i] <= 2; j++) consider(j)
+    if (best == "") best = "spontaneous"
+    cnt[best]++; bylid[lid]++
+    when[inc] = ts[i]; why[inc] = best
+    gap = (inc > 1 ? e[i] - prev_e : -1); prev_e = e[i]
+    printf "%s  %-28s lid=%-7s uc=%-7s %s%s\n", ts[i], best, lid, uc,
+      (best == "spontaneous" ? "" : sprintf("dt=%+ds ", bestdt)),
+      (gap >= 0 ? sprintf("since-prev=%dm%02ds", int(gap / 60), gap % 60) : "")
+    if (VERBOSE && also != "") printf "      window:%s\n", also
+    if (best == "spontaneous") { sp++; if (gap >= 0) spgap[sp] = gap }
+  }
+  print ""
+  printf "UC drop incidents: %d (window %ds)\n", inc, W
+  for (c in cnt) printf "  %-30s %d\n", c, cnt[c]
+  if (!SYSTEM) { print "by lid state:"; for (l in bylid) printf "  %-30s %d\n", l, bylid[l] }
+  printf "tool actions: connect=%d disconnect=%d\n", tools["CONNECT"] + 0, tools["DISCONNECT"] + 0
+  printf "sidecar: connected=%d closed=%d sleep-disconnect=%d reconnecting=%d errors=%d\n",
+    sc["CONNECTED"] + 0, sc["CLOSED"] + 0, sc["SLEEP-DISCONNECT"] + 0, sc["RECONNECTING"] + 0, sc["ERROR"] + 0
+  if (SYSTEM) print "(from the unified log: lid, display and Wi-Fi changes are not available in this mode)"
+}
+function consider(j,   c, p, dt) {
+  c = cause_of(j); if (c == "") return
+  p = substr(c, 1, index(c, " ") - 1) + 0; c = substr(c, index(c, " ") + 1)
+  dt = e[j] - e[i]
+  if (VERBOSE) also = also sprintf(" [%+ds %s/%s]", dt, tag[j], kind[j])
+  # higher priority wins; on a tie the event closest to the drop
+  if (p > bestp || (p == bestp && absv(dt) < absv(bestdt))) { best = c; bestp = p; bestdt = dt }
+}
+function absv(x) { return x < 0 ? -x : x }
+'
