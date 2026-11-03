@@ -43,6 +43,8 @@ stream_unified() {
   /usr/bin/log stream --style ndjson --level info --predicate "$PREDICATE" 2>>"$LOGS/watch.err" \
     | /usr/bin/jq --unbuffered -R -r -f "$LIB/events.jq" 2>>"$LOGS/watch.err" \
     | while IFS=$'\t' read -r ts tag kind msg; do
+        # PEER lines are kept as they come (~1 per minute at rest): their rate is the
+        # signal, a burst means a peer is changing role (e.g. the iPad taken by another Mac).
         # Name the process that asked for a connect/disconnect while it is still alive:
         # SidecarLauncher means our tools, ControlCenter means a click.
         if [ "$kind" = CONNECT-REQ ] || [ "$kind" = DISCONNECT-REQ ]; then

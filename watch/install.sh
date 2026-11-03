@@ -55,7 +55,16 @@ plutil -lint "$staged" >/dev/null || die "rendered plist is not valid"
 mv -f "$staged" "$PLIST"
 
 launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-launchctl bootstrap "$DOMAIN" "$PLIST" || die "launchctl bootstrap failed (is a graphical session logged in?)"
+# bootout is asynchronous: bootstrapping while the old job is still being torn down
+# fails with "5: Input/output error". Wait for it to be gone, then retry once.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break
+  sleep 1
+done
+if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
+  sleep 3
+  launchctl bootstrap "$DOMAIN" "$PLIST" || die "launchctl bootstrap failed (is a graphical session logged in?)"
+fi
 sleep 2
 state="$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -n 1)"
 echo "agent:     $LABEL ($DOMAIN) ${state:-unknown}"

@@ -35,6 +35,7 @@ depend on this checkout.
 |---|---|---|
 | `UC` | unified log, UniversalControl | `DROP` (Peer appears missing), `NETERR`, `ACTIVE` / `IDLE` (UC in use or not) |
 | `SC` | unified log, `com.apple.sidecar` | `CONNECT-REQ` / `DISCONNECT-REQ` (with `by=` the requesting process), `CONNECTED`, `CLOSED`, `SLEEP-DISCONNECT`, `RECONNECTING`, `HW-CHANGED`, `ERROR`, … |
+| `PEER` | unified log, `Device Changed` seen by UniversalControl or SidecarRelay | `CHANGED`: a nearby device (iPad, iPhone, other Mac) re-advertising; the rate is what matters |
 | `TOOL` | `tools/logs/sidecar.log` | `CONNECT`, `DISCONNECT`, `CONNECTED`, `LAYOUT`, `ERROR`, `WARN`, `INFO` |
 | `LID` | `ioreg` every 10 s | `open` / `closed` |
 | `DISP` | `bin/snap` every 10 s | the display set, e.g. `virtual#17*main sidecar#21>17` (`*main`, `>N` mirrors N) |
@@ -58,8 +59,16 @@ highest-priority event in the 15 s before it (2 s after, for lines logged late):
 `tool-connect`/`tool-disconnect` › `sidecar-manual-*` (Control Center or another
 process) › `lid-open`/`lid-closed` › `display-sleep` › `sidecar-closed` (the session
 ended without a request from here: e.g. the iPad taken by another Mac) ›
-`sidecar-reconnecting` › `vdisp-changed` › `display-topology` › `wifi/awdl` › `power`
-› `spontaneous`. The summary counts causes, lid states and Sidecar sessions.
+`sidecar-reconnecting` › `vdisp-changed` › `peer-burst:<id>(n)` › `display-topology` ›
+`wifi/awdl` › `power` › `peer-adv:<id>` › `spontaneous`. The summary counts causes, lid
+states and Sidecar sessions.
+
+`peer-burst` is a burst of `Device Changed` from the Sidecar device (≥ 7 in 20 s): the
+iPad changing role, e.g. taken by another Mac — which this Mac cannot see otherwise.
+Measured on 2026-11-03: at most 5 in 20 s at rest, 8 when the work Mac took the iPad.
+Only the Sidecar device counts (learnt from `Sidecar Connect IDS …`, or set
+`IPAD_IDS=5F628A77`): an iPhone nearby re-advertised 29 times in 20 s with nothing
+happening. A single change of any peer is `peer-adv`, weak evidence ranked last.
 
 `--from-system` rebuilds a timeline from the unified log and `sidecar.log` for any
 past window; lid, display and Wi-Fi changes exist only in a recording.

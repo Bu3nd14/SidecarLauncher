@@ -57,7 +57,7 @@ timeline() {
 
 # sort -s keeps the original order of lines with the same second (stream order).
 timeline | LC_ALL=C sort -s -t "$(printf '\t')" -k1,1 | /usr/bin/awk -F '\t' \
-  -v W="$WINDOW" -v VERBOSE="$VERBOSE" -v SYSTEM="$([ -n "$FROM" ] && echo 1 || echo 0)" '
+  -v W="$WINDOW" -v VERBOSE="$VERBOSE" -v IPAD="${IPAD_IDS:-}" -v SYSTEM="$([ -n "$FROM" ] && echo 1 || echo 0)" '
 function epoch(ts,   y, m, d, H, M, S, era, yoe, doy, doe) {
   # days-from-civil (no mktime in macOS awk); only differences matter here
   y = substr(ts, 1, 4) + 0; m = substr(ts, 6, 2) + 0; d = substr(ts, 9, 2) + 0
@@ -80,6 +80,10 @@ function cause_of(i,   t, k, m) {
   if (t == "SC" && (k == "CLOSED" || k == "RELAY-TERMINATED")) return "70 sidecar-closed"
   if (t == "SC" && k == "RECONNECTING") return "65 sidecar-reconnecting"
   if (t == "VDISP") return "60 vdisp-changed"
+  # A burst of the Sidecar device (>= 7 changes in 20 s) is the iPad changing role, e.g.
+  # taken by another Mac (measured: max 5 at rest, 8 on 2026-11-03 09:04:52). Other peers
+  # are ignored for bursts: an iPhone re-advertised 29 times in 20 s with nothing going on.
+  if (t == "PEER") return ((peer_id(m) in sidecar_dev) && burst[i] >= 7 ? "55 peer-burst:" peer_id(m) "(" burst[i] ")" : "20 peer-adv:" peer_id(m))
   if (t == "DISP" || (t == "SC" && k == "HW-CHANGED")) return "50 display-topology"
   if (t == "NET") return "40 wifi/awdl"
   if (t == "PWR") return "30 power"
@@ -90,6 +94,17 @@ function cause_of(i,   t, k, m) {
 }
 END {
   if (n == 0) { print "no events"; exit 1 }
+  # the Sidecar device(s): learnt from "Sidecar Connect/Disconnect IDS <id>", or IPAD_IDS
+  split(IPAD, pre, ","); for (k in pre) if (pre[k] != "") sidecar_dev[pre[k]] = 1
+  for (j = 1; j <= n; j++)
+    if (tag[j] == "SC" && msg[j] ~ /Sidecar (Connect|Disconnect|Connected) IDS /) sidecar_dev[peer_id(msg[j])] = 1
+  # burst[j]: changes of the same peer in the 20 s up to and including event j
+  for (j = 1; j <= n; j++) {
+    if (tag[j] != "PEER") continue
+    id = peer_id(msg[j]); burst[j] = 0
+    for (k = j; k >= 1 && e[j] - e[k] <= 20; k--)
+      if (tag[k] == "PEER" && peer_id(msg[k]) == id) burst[j]++
+  }
   lid = (SYSTEM ? "n/a" : "unknown"); uc = "unknown"
   inc = 0; last_drop = -1e18
   for (i = 1; i <= n; i++) {
@@ -135,4 +150,5 @@ function consider(j,   c, p, dt) {
   if (p > bestp || (p == bestp && absv(dt) < absv(bestdt))) { best = c; bestp = p; bestdt = dt }
 }
 function absv(x) { return x < 0 ? -x : x }
+function peer_id(m,   s) { s = m; sub(/^.*IDS /, "", s); sub(/[^0-9A-Fa-f].*$/, "", s); return s }
 '

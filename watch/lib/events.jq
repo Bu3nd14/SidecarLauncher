@@ -13,7 +13,14 @@ fromjson? | objects
 | select(.eventMessage != null)
 | . as $r
 | (msg) as $m
-| if proc == "UniversalControl" then
+# A peer device (the iPad, another Mac) changing its advertised state, as seen by
+# UniversalControl (uc) or SidecarRelay (sidecar). RSSI-only updates are filtered upstream.
+| if ($m | test(": Device Changed")) then
+    # A single change is weak evidence (peers re-advertise every minute or two);
+    # uc-analyze looks at the rate per peer instead.
+    (if proc == "UniversalControl" then "uc" else "sidecar" end) as $who
+    | "\(ts)\tPEER\tCHANGED\t\($who) \($m | sub("^.*?IDS "; "IDS "))"
+  elif proc == "UniversalControl" then
     if   ($m | contains("Peer appears missing"))            then emit("UC"; "DROP")
     elif ($m | contains("kNetworkErr -> kConnectionErr"))    then emit("UC"; "NETERR")
     elif ($m | contains("Take Display Sleep Assertion"))     then emit("UC"; "ACTIVE")
