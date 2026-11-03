@@ -270,20 +270,35 @@ Facts are marked **[shown]** when a log line supports them, **[inferred]** other
 | RC2b | **display sleep** (`pmset displaysleep 10`) → `Display Sleep: Disconnecting` | **[shown]** 8× on 11-02, **not solved** | see RC3 |
 | RC2c | Sidecar reconnecting by itself (`CLOSED → Reconnecting → CONNECTED`) | **[shown]** ~10× on 11-02, **cause unknown**, none since the 21:35 reboot | 13:14, 13:15, 18:03, 20:06, 21:20, 21:28, 22:23, 22:44, 23:33 |
 | RC2d | another Mac taking the iPad (switch to the work Mac) | **[shown]**, inherent: one drop per transition | 09:04:52 (iPad burst of `Device Changed`) |
-| RC3 | display sleep only happens while UniversalControl does **not** hold `PreventUserIdleDisplaySleep`; UC holds it while it is in use | **[shown]** | 11-02: 57 holds, longest 54 min, released after each use (also after 23:14: longest 643 s). 11-03: **held without interruption since 08:20:24** (~2 h) |
+| RC3 | display sleep only happens while UniversalControl does **not** hold `PreventUserIdleDisplaySleep`. **How long UC holds it changed at 23:14 on 11-02, when `GlueIdleTimeout = 3600` was written** | **[shown]** timing, **[inferred]** cause | before 23:14: taken and released within 1–3 min, repeatedly (23:05→23:05, 23:06→23:06, 23:07→23:07, 23:08→23:09, 23:09→23:11, 23:11→23:12). After 23:14: 23:17→23:28 (ended by the lid/vdisp restart, not by idling), 23:28→23:30 (system sleep). 11-03: **taken at 08:20:24 and never released**, through **one hour of complete idle** reported by the user (10:20: held 2 h 00 min, display never turned off) |
 
-**Why today is quiet.** No single fix: four conditions hold at the same time.
+> **Correction (10:25).** The first version of this synthesis said UC holds the assertion
+> "while it is in use" and that today's quiet was "continuous use, not a fix". The user
+> left everything idle for an hour and nothing dropped, so that was wrong: the hold does
+> not depend on use. The evidence points at the 23:14 `GlueIdleTimeout` default instead.
+
+**Why today is quiet.** The most likely main factor is **[inferred]**, the rest is
+**[shown]**:
+- **`GlueIdleTimeout = 3600`** (23:14): UC keeps its session "glued", and with it the
+  display-sleep assertion, through up to an hour of idle instead of a few minutes. So the
+  display never sleeps, Sidecar never logs `Display Sleep: Disconnecting`, and RC2b cannot
+  happen. Before 23:14 the short glue alone may already have been perceived as UC "going
+  away" after a few idle minutes: the frequent `Canceling Service` the other agent measured
+  yesterday fits that.
 - RC1 is gone thanks to `vdisp`.
 - RC2a: only one `up` since 09:05.
-- RC2b is not triggered because UC has been in continuous use, so the display never went
-  idle **[shown]**. This is not a fix.
 - RC2c has not happened since the reboot **[inferred]**: the display state is clean.
 
-**Not shown to matter, and confounded with each other**: the layout (f56b25c) and the
-23:14 defaults (`AutomaticallyReconnect`, `GlueIdleTimeout`). The defaults plausibly
-shorten recovery (~10 s), but they did not stop the drops at this morning's switch and did
-not make the display assertion permanent last night. The hour after 09:05 is consistent
-with RC3 alone: continuous use keeps the display awake whatever the layout.
+**Not shown to matter**: the layout (f56b25c). The six clean lid cycles happened partly
+before 23:14 (four of them), so the layout cannot be fully excluded, but nothing in the
+data needs it. `AutomaticallyReconnect` plausibly explains the ~10 s self-recovery; it did
+not prevent the drops at this morning's switch.
+
+**Prediction that would confirm `GlueIdleTimeout`:** after more than 60 minutes with no
+input at all, UC releases the assertion, the display turns off 10 minutes later
+(`displaysleep 10`), Sidecar logs `Display Sleep: Disconnecting`, and UC drops. Removing
+the default (`defaults delete com.apple.universalcontrol GlueIdleTimeout`, then restarting
+UniversalControl) should bring back releases within a few minutes of idle.
 
 **Open, and the most important**: whether a reset of the UC↔iPad link is what the user
 *perceives*. The typed input comes from `A051E41E`. This morning its VHID service events
@@ -315,10 +330,12 @@ read with `uc-analyze` plus the user's markers.
 | step | test | prediction | then |
 |---|---|---|---|
 | T0 | normal use for a day, marking each perceived drop | each marker lines up with metric 2 (and maybe 3) | calibrates which proxy means "drop" |
-| T1 | leave the Mac idle with the pointer on the other Mac for 12 min | UC releases the assertion → `Display is turned off` → `SLEEP-DISCONNECT` → drop | confirms RC2b/RC3 |
-| T2 | fix: keep the displays awake while a Sidecar session is up, then repeat T1 | no sleep-disconnect | first tool change |
-| T3 | idempotent `up` (no reconnect when healthy); run `up` twice | the second run causes no drop | second tool change |
-| T4 | only after T1–T3: layout A/B, then defaults A/B, each over a comparable period | none yet | settles the confounds |
+| ~~T1~~ | ~~idle 12 min~~: **done by the user, 1 h idle, no drop**; the assertion stayed held | refuted the "in use" version of RC3 | — |
+| T1′ | idle **> 70 min** with no input at all | assertion released after ~60 min → display off ~10 min later → `SLEEP-DISCONNECT` → drop | confirms `GlueIdleTimeout` as the reason for today |
+| T2 | defaults A/B: `defaults delete com.apple.universalcontrol GlueIdleTimeout`, restart UniversalControl, idle 15 min; then write it back | without it: releases within minutes, display sleep, drop | settles the main confound (moved up from T4) |
+| T3 | fix independent of UC: keep the displays awake while a Sidecar session is up, then repeat T1′ | no sleep-disconnect even after the glue expires | first tool change |
+| T4 | idempotent `up` (no reconnect when healthy); run `up` twice | the second run causes no drop | second tool change |
+| T5 | only at the end: layout A/B over a comparable period | none yet | settles the last confound |
 
 RC2c (spontaneous reconnects) has no test of its own: if it comes back, the recorder
 shows what preceded it.
