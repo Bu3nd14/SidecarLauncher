@@ -73,8 +73,9 @@ function cause_of(i,   t, k, m) {
   t = tag[i]; k = kind[i]; m = msg[i]
   if (t == "TOOL" && k == "CONNECT") return "100 tool-connect"
   if (t == "TOOL" && k == "DISCONNECT") return "100 tool-disconnect"
-  if (t == "SC" && k == "CONNECT-REQ") return (m ~ /by=(SidecarLauncher|gone)/ ? "95 tool-connect" : "90 sidecar-manual-connect")
-  if (t == "SC" && k == "DISCONNECT-REQ") return (m ~ /by=(SidecarLauncher|gone)/ ? "95 tool-disconnect" : "90 sidecar-manual-disconnect")
+  # by= exists only in a live recording; from the system log the requester is unknown
+  if (t == "SC" && k == "CONNECT-REQ") return (m !~ /by=/ ? "92 sidecar-connect" : m ~ /by=(SidecarLauncher|gone)/ ? "95 tool-connect" : "90 sidecar-manual-connect")
+  if (t == "SC" && k == "DISCONNECT-REQ") return (m !~ /by=/ ? "92 sidecar-disconnect" : m ~ /by=(SidecarLauncher|gone)/ ? "95 tool-disconnect" : "90 sidecar-manual-disconnect")
   if (t == "LID") return "80 lid-" k
   if (t == "SC" && k == "SLEEP-DISCONNECT") return "75 display-sleep"
   if (t == "SC" && (k == "CLOSED" || k == "RELAY-TERMINATED")) return "70 sidecar-closed"
