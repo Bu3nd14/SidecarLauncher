@@ -218,3 +218,107 @@ act on the causes that are already shown.
   there.
 - The recorder under `tools/`: agreed if it proves useful. For now it stays separate on
   purpose, so that the tools can change without the measuring instrument changing too.
+
+---
+
+# Addendum: the missing measurement (2026-11-03 ~10:15)
+
+Agreed with the reply, including its self-correction: `Peer appears missing` measures the
+UC↔iPad link (392 of ~600 aborted streams go to the iPad's AWDL address), while the input the
+user types comes from `A051E41E`. So neither of our tables measures the thing the user actually
+experiences.
+
+**The gap, stated as a point:** no run so far logs *perceived* drops. Everything we measured is
+either a Sidecar session transition, a stream abort, or a VHID service event — all proxies that
+the user reported as not matching their experience at least once (the 42-minute stretch had a P2P
+link flap the user did not notice; and yesterday `Canceling Service` events fired without the user
+reporting a loss).
+
+**Minimal proposal, three parts**, in increasing order of value:
+
+1. the recorder logs `VHID ... Activated/Canceling Service` **with the IDS** next to the existing
+   iPad-side events, so the two links are distinguishable in one timeline;
+2. stream aborts are tagged iPad vs other by matching the Sidecar relay address (`fe80::b830:…`
+   is the iPad), which the reply already does by hand;
+3. the user reports "it stopped now" once, with a time. A single timestamp is enough to check
+   whether any of the three metrics fires at that moment. Without it we are calibrating proxies
+   against each other.
+
+**Datapoint to keep:** 2026-11-03 09:05:18 (`Sidecar Connected`) → at least 10:14, i.e. **over an
+hour** with the current layout (`vdisp` main, Sidecar mirroring it) and no `up`/`down` in between.
+It is the longest clean sample we have. It does not prove the layout helps — the defaults of 23:14
+are still in place and no perceived drop was reported in that window either way — but any future
+A/B must explain why this hour stayed quiet.
+
+A stopgap exists and is not a substitute: a shell timer in `/tmp` (started 08:32) logs keyboard
+service events and P2P link changes to `/tmp/uc-timer.log`. It dies with the session and lives
+outside the repo, so it should not be confused with the recorder.
+
+---
+
+# Synthesis (2026-11-03 ~10:20): root causes, measurements, how to continue
+
+Facts are marked **[shown]** when a log line supports them, **[inferred]** otherwise.
+
+## 1. Root causes
+
+| # | cause | status | evidence |
+|---|---|---|---|
+| RC1 | **No non-built-in display**: lid closed → `DesktopMode with AC: 0` → Sidecar closes its session | **[shown]**, **solved** by `vdisp` (13:54 on 11-02) | 12:31:02 lid closed → Sidecar CLOSED → drop 12:32; README table |
+| RC2 | **Any Sidecar role change of the iPad resets the UC↔iPad link**: an OS mechanism with several triggers (RC2a–d) | **[shown]** | `Peer appears missing` on the iPad's AWDL address 0–3 s after each transition (392/~600 aborts) |
+| RC2a | our `up`/`down`, and the retry loops of earlier tool versions | **[shown]**, reduced (3846cf5); to remove with an idempotent `up` | 26/37 afternoon incidents on 11-02 |
+| RC2b | **display sleep** (`pmset displaysleep 10`) → `Display Sleep: Disconnecting` | **[shown]** 8× on 11-02, **not solved** | see RC3 |
+| RC2c | Sidecar reconnecting by itself (`CLOSED → Reconnecting → CONNECTED`) | **[shown]** ~10× on 11-02, **cause unknown**, none since the 21:35 reboot | 13:14, 13:15, 18:03, 20:06, 21:20, 21:28, 22:23, 22:44, 23:33 |
+| RC2d | another Mac taking the iPad (switch to the work Mac) | **[shown]**, inherent: one drop per transition | 09:04:52 (iPad burst of `Device Changed`) |
+| RC3 | display sleep only happens while UniversalControl does **not** hold `PreventUserIdleDisplaySleep`; UC holds it while it is in use | **[shown]** | 11-02: 57 holds, longest 54 min, released after each use (also after 23:14: longest 643 s). 11-03: **held without interruption since 08:20:24** (~2 h) |
+
+**Why today is quiet.** No single fix: four conditions hold at the same time.
+- RC1 is gone thanks to `vdisp`.
+- RC2a: only one `up` since 09:05.
+- RC2b is not triggered because UC has been in continuous use, so the display never went
+  idle **[shown]**. This is not a fix.
+- RC2c has not happened since the reboot **[inferred]**: the display state is clean.
+
+**Not shown to matter, and confounded with each other**: the layout (f56b25c) and the
+23:14 defaults (`AutomaticallyReconnect`, `GlueIdleTimeout`). The defaults plausibly
+shorten recovery (~10 s), but they did not stop the drops at this morning's switch and did
+not make the display assertion permanent last night. The hour after 09:05 is consistent
+with RC3 alone: continuous use keeps the display awake whatever the layout.
+
+**Open, and the most important**: whether a reset of the UC↔iPad link is what the user
+*perceives*. The typed input comes from `A051E41E`. This morning its VHID service events
+appear only during the switch (09:04:24–09:04:58), which is consistent with no perceived
+drop, but no perceived drop has been timestamped yet.
+
+## 2. Measurements
+
+Ranked by how close they are to the user's experience:
+
+1. **Perceived drop**: the user's "it stopped now", with a time. The only ground truth,
+   and still missing.
+2. **A051E41E link** (the input the user types): VHID `Activated/Canceling Service` with
+   the IDS, and stream aborts **not** going to the iPad's address.
+3. **iPad link**: `Peer appears missing` and aborts to the Sidecar relay address.
+4. **Triggers**: Sidecar session transitions (connect, disconnect, close, sleep-disconnect,
+   reconnect), tool actions, lid, display set, the UC display-sleep assertion
+   (Take/Release), `Display is turned off|on`, Wi-Fi/AWDL, power, iPad role bursts.
+
+The recorder already logs 3 and 4 (the assertion as `UC ACTIVE/IDLE`). Still missing:
+1 (a marker command), 2 (VHID with the IDS; aborts tagged by address) and the pmset
+display on/off events. These are additions to `watch/`, not to `tools/`.
+
+## 3. How to continue: one variable at a time
+
+Every test runs with the recorder on, the defaults and the layout left as they are, and is
+read with `uc-analyze` plus the user's markers.
+
+| step | test | prediction | then |
+|---|---|---|---|
+| T0 | normal use for a day, marking each perceived drop | each marker lines up with metric 2 (and maybe 3) | calibrates which proxy means "drop" |
+| T1 | leave the Mac idle with the pointer on the other Mac for 12 min | UC releases the assertion → `Display is turned off` → `SLEEP-DISCONNECT` → drop | confirms RC2b/RC3 |
+| T2 | fix: keep the displays awake while a Sidecar session is up, then repeat T1 | no sleep-disconnect | first tool change |
+| T3 | idempotent `up` (no reconnect when healthy); run `up` twice | the second run causes no drop | second tool change |
+| T4 | only after T1–T3: layout A/B, then defaults A/B, each over a comparable period | none yet | settles the confounds |
+
+RC2c (spontaneous reconnects) has no test of its own: if it comes back, the recorder
+shows what preceded it.
