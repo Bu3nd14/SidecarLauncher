@@ -37,6 +37,82 @@ final class RunnerEnvironmentTests: XCTestCase {
         ].joined(separator: "\0") + "\0"
     }
 
+    private func makeShellScript(_ body: String, directory: URL) throws -> URL {
+        let url = directory.appendingPathComponent("fake-shell.sh")
+        try Data(("#!/bin/sh\n" + body + "\n").utf8).write(to: url)
+        chmod(url.path, 0o755)
+        return url
+    }
+
+    func testSnapshotRetriesInteractiveLoginWhenProxyMissing() async throws {
+        let directory = try makeTempDirectory("env-interactive")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let calls = directory.appendingPathComponent("calls.log")
+        let shell = try makeShellScript("""
+        printf '%s|%s\n' "$1" "$2" >> '\(calls.path)'
+        case "$1" in
+          -lic)
+            export http_proxy=http://localhost:4242
+            export https_proxy=http://localhost:4242
+            export SSL_CERT_FILE=/tmp/ca.pem
+            ;;
+        esac
+        /usr/bin/env -0
+        """, directory: directory)
+
+        let runner = SystemCommandRunner(gracePeriod: .milliseconds(200))
+        let provider = LoginShellEnvironmentProvider(runner: runner, logging: NoopLogging(),
+                                                     shellPath: shell.path, fallback: nil)
+        let snapshot = await provider.capture()
+        let env = try XCTUnwrap(snapshot?.variables)
+        XCTAssertEqual(env["https_proxy"], "http://localhost:4242")
+        XCTAssertEqual(env["SSL_CERT_FILE"], "/tmp/ca.pem")
+        XCTAssertEqual(snapshot?.proxyAvailable, true)
+        let log = try String(contentsOf: calls, encoding: .utf8)
+        XCTAssertTrue(log.contains("-lc|env -0"))
+        XCTAssertTrue(log.contains("-lic|env -0"))
+    }
+
+    func testSnapshotRetriesSourcingZshrcWhenInteractiveStillMissing() async throws {
+        let directory = try makeTempDirectory("env-source")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let calls = directory.appendingPathComponent("calls.log")
+        let shell = try makeShellScript("""
+        printf '%s|%s\n' "$1" "$2" >> '\(calls.path)'
+        case "$2" in
+          *source*)
+            export http_proxy=http://localhost:4242
+            export https_proxy=http://localhost:4242
+            export SSL_CERT_FILE=/tmp/ca.pem
+            ;;
+        esac
+        /usr/bin/env -0
+        """, directory: directory)
+
+        let runner = SystemCommandRunner(gracePeriod: .milliseconds(200))
+        let provider = LoginShellEnvironmentProvider(runner: runner, logging: NoopLogging(),
+                                                     shellPath: shell.path, fallback: nil)
+        let snapshot = await provider.capture()
+        XCTAssertEqual(snapshot?.variables["https_proxy"], "http://localhost:4242")
+        let log = try String(contentsOf: calls, encoding: .utf8)
+        XCTAssertTrue(log.contains("-lic|env -0"))
+        XCTAssertTrue(log.contains("source ~/.zshrc"))
+    }
+
+    func testSnapshotWithoutProxyKeepsFallbackAndWarning() async throws {
+        let directory = try makeTempDirectory("env-no-proxy")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let shell = try makeShellScript("/usr/bin/env -0", directory: directory)
+        let log = ArrayLogging()
+        let runner = SystemCommandRunner(gracePeriod: .milliseconds(200))
+        let provider = LoginShellEnvironmentProvider(runner: runner, logging: log,
+                                                     shellPath: shell.path, fallback: nil)
+        let snapshot = await provider.capture()
+        XCTAssertEqual(snapshot?.proxyAvailable, false)
+        XCTAssertNil(snapshot?.variables["https_proxy"])
+        XCTAssertTrue(log.messages.contains { $0.contains("proxy/CA non disponibili") })
+    }
+
     func testK47K48LoginShellSnapshotFiltersAllowlistAndKeepsProxyCase() async {
         let shellText = loginShellSnapshot
         let runner = ClosureRunner { spec in

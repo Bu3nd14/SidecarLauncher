@@ -117,16 +117,12 @@ public final class LoginShellEnvironmentProvider: EnvironmentProviding, @uncheck
         return storeSnapshot(snapshot)
     }
 
-    private func compute() async -> EnvironmentSnapshot {
+    private func snapshot(arguments: [String]) async -> [String: String]? {
         let result = await runner.run(
-            CommandSpec(executable: shellPath, arguments: ["-lc", "env -0"]),
+            CommandSpec(executable: shellPath, arguments: arguments),
             timeout: timeout
         )
-        guard result.exitCode == 0, !result.stdout.isEmpty else {
-            logging.log(.warning, "login shell: snapshot ambiente non disponibile, uso allowlist base (proxy/CA non ereditati)")
-            return EnvironmentSnapshot(variables: BaseEnvironment.make(), proxyAvailable: false)
-        }
-
+        guard result.exitCode == 0, !result.stdout.isEmpty else { return nil }
         let capped = String(result.stdout.prefix(maxBytes))
         var raw: [String: String] = [:]
         for entry in capped.split(separator: "\0", omittingEmptySubsequences: true) {
@@ -136,30 +132,51 @@ public final class LoginShellEnvironmentProvider: EnvironmentProviding, @uncheck
             guard !key.isEmpty else { continue }
             raw[key] = value
         }
+        return EnvironmentAllowlist.filter(raw)
+    }
 
-        var filtered = EnvironmentAllowlist.filter(raw)
-        if filtered.isEmpty {
-            logging.log(.warning, "login shell: ambiente vuoto, uso allowlist base")
+    private func merge(_ variables: inout [String: String], with next: [String: String]?) {
+        guard let next, !next.isEmpty else { return }
+        for (key, value) in next where !value.isEmpty {
+            variables[key] = value
+        }
+    }
+
+    private func compute() async -> EnvironmentSnapshot {
+        var variables = await snapshot(arguments: ["-lc", "env -0"]) ?? [:]
+
+        if !EnvironmentAllowlist.containsProxy(variables) || !EnvironmentAllowlist.containsCA(variables) {
+            let interactive = await snapshot(arguments: ["-lic", "env -0"])
+            merge(&variables, with: interactive)
+        }
+
+        if !EnvironmentAllowlist.containsProxy(variables) || !EnvironmentAllowlist.containsCA(variables) {
+            let sourced = await snapshot(arguments: ["-lc", "source ~/.zshrc >/dev/null 2>&1; env -0"])
+            merge(&variables, with: sourced)
+        }
+
+        if variables.isEmpty {
+            logging.log(.warning, "login shell: snapshot ambiente non disponibile, uso allowlist base (proxy/CA non ereditati)")
             return EnvironmentSnapshot(variables: BaseEnvironment.make(), proxyAvailable: false)
         }
 
-        for (key, value) in BaseEnvironment.make() where filtered[key] == nil {
-            filtered[key] = value
+        for (key, value) in BaseEnvironment.make() where variables[key] == nil {
+            variables[key] = value
         }
 
-        if !EnvironmentAllowlist.containsProxy(filtered) || !EnvironmentAllowlist.containsCA(filtered) {
-            if let fallback, let recovered = await fallback.discover(existing: filtered) {
-                for (key, value) in recovered where filtered[key] == nil {
-                    filtered[key] = value
+        if !EnvironmentAllowlist.containsProxy(variables) || !EnvironmentAllowlist.containsCA(variables) {
+            if let fallback, let recovered = await fallback.discover(existing: variables) {
+                for (key, value) in recovered where variables[key] == nil {
+                    variables[key] = value
                 }
             }
         }
 
-        let proxyAvailable = EnvironmentAllowlist.containsProxy(filtered)
+        let proxyAvailable = EnvironmentAllowlist.containsProxy(variables)
         if !proxyAvailable {
             logging.log(.warning, "login shell: proxy/CA non disponibili nell'ambiente (rete senza proxy o configurazione mancante)")
         }
-        return EnvironmentSnapshot(variables: filtered, proxyAvailable: proxyAvailable)
+        return EnvironmentSnapshot(variables: variables, proxyAvailable: proxyAvailable)
     }
 }
 

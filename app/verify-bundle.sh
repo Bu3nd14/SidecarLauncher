@@ -17,7 +17,7 @@ case "${1:-}" in
 usage: ./verify-bundle.sh [--no-build]
 
 Esegue app/build.sh in una directory temporanea (K1) e verifica:
-struttura del bundle, Info.plist (0.1.0/1), TOOLS_VERSION, lipo -archs=arm64 su
+struttura del bundle, Info.plist (0.1.1/2), TOOLS_VERSION, lipo -archs=arm64 su
 eseguibile e 5 tool, firma ad-hoc. Con --no-build verifica app/build.
 EOF
     exit 0
@@ -96,13 +96,13 @@ RESOURCES_VERSION="$(tr -d '[:space:]' < "$BUNDLE/Contents/Resources/VERSION")"
 [ "$VERSION" = "$RESOURCES_VERSION" ] || die "VERSION ($RESOURCES_VERSION) != TOOLS_VERSION ($VERSION)"
 PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$BUNDLE/Contents/Info.plist")"
 PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$BUNDLE/Contents/Info.plist")"
-[ "$PLIST_VERSION" = "0.1.0" ] || die "CFBundleShortVersionString ($PLIST_VERSION) != 0.1.0"
-[ "$PLIST_BUILD" = "1" ] || die "CFBundleVersion ($PLIST_BUILD) != 1"
+[ "$PLIST_VERSION" = "0.1.1" ] || die "CFBundleShortVersionString ($PLIST_VERSION) != 0.1.1"
+[ "$PLIST_BUILD" = "2" ] || die "CFBundleVersion ($PLIST_BUILD) != 2"
 if git -C "$REPO_DIR" rev-parse --short HEAD >/dev/null 2>&1; then
   EXPECTED="$(git -C "$REPO_DIR" rev-parse --short HEAD)"
   [ "$VERSION" = "$EXPECTED" ] || die "TOOLS_VERSION ($VERSION) != git HEAD ($EXPECTED)"
 fi
-ok "TOOLS_VERSION separato ($VERSION); bundle 0.1.0 (1)"
+ok "TOOLS_VERSION separato ($VERSION); bundle 0.1.1 (2)"
 
 check_arch() {
   local path="$1" label="$2" archs
