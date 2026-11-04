@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "device": { "name": "iPad" },
+  "remote": {
+    "host": "personale.local",
+    "user": "utente",
+    "port": 22,
+    "identityFile": "~/.ssh/id_ed25519_sidecar_switch",
+    "binaryPath": "/Users/utente/SidecarLauncher/tools/bin/SidecarLauncher",
+    "connectedPath": "/Users/utente/SidecarLauncher/tools/bin/connected",
+    "dispidPath": "/Users/utente/SidecarLauncher/tools/bin/dispid",
+    "mirrorPath": "/Users/utente/SidecarLauncher/tools/bin/mirror",
+    "arrangePath": "/Users/utente/SidecarLauncher/tools/bin/arrange"
+  },
+  "ssh": { "strictHostKeyChecking": "accept-new", "connectTimeout": 15 },
+  "hotkey": { "keyCode": 1, "modifiers": ["control", "option", "command"] },
+  "lastLocation": "unknown",
+  "needsReconcile": false
+}
