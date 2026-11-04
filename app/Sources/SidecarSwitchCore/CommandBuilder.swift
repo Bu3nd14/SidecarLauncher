@@ -217,6 +217,50 @@ public enum CommandBuilder {
 
     public static let sshExecutable = "/usr/bin/ssh"
 
+    public static func remoteBatchCommand(kind: RemoteBatchKind, nonce: String,
+                                          binaryPath: String, connectedPath: String,
+                                          dispidPath: String, settle: Duration) throws -> String {
+        guard BatchProtocol.isValidNonce(nonce) else { throw CommandBuilderError.invalidPath("nonce") }
+        try validateAbsolutePath(binaryPath)
+        try validateAbsolutePath(connectedPath)
+        try validateAbsolutePath(dispidPath)
+
+        func begin(_ section: String) -> String {
+            "printf '" + BatchProtocol.begin(section, nonce: nonce) + "\\n'"
+        }
+        func end(_ section: String) -> String {
+            "printf '" + BatchProtocol.endPrefix(section, nonce: nonce) + "%d\\n' \"$?\""
+        }
+
+        var parts: [String] = []
+        switch kind {
+        case .prereqs:
+            parts = [
+                begin("devices"),
+                shellQuote(binaryPath) + " devices",
+                end("devices"),
+                begin("dispid"),
+                shellQuote(dispidPath),
+                end("dispid")
+            ]
+        case .verify:
+            let seconds = max(0, Int(settle.inSeconds.rounded()))
+            parts = [
+                begin("connected_a"),
+                shellQuote(connectedPath),
+                end("connected_a"),
+                "sleep \(seconds)",
+                begin("connected_b"),
+                shellQuote(connectedPath),
+                end("connected_b"),
+                begin("dispid"),
+                shellQuote(dispidPath),
+                end("dispid")
+            ]
+        }
+        return parts.joined(separator: "\n")
+    }
+
     public static func sshArguments(
         remote: RemoteSettings,
         ssh: SSHSettings,

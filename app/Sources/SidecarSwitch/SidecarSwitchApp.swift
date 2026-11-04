@@ -53,6 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+        if model.dockIconController == nil {
+            model.dockIconController = DockIconController()
+        }
+        model.dockIconController?.apply(isTransitioning: false)
         Task { await model.start() }
     }
 

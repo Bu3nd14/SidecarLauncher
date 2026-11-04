@@ -17,7 +17,7 @@ case "${1:-}" in
 usage: ./verify-bundle.sh [--no-build]
 
 Esegue app/build.sh in una directory temporanea (K1) e verifica:
-struttura del bundle, Info.plist (0.1.1/2), TOOLS_VERSION, lipo -archs=arm64 su
+struttura del bundle, Info.plist (0.2.0/3), TOOLS_VERSION, lipo -archs=arm64 su
 eseguibile e 5 tool, firma ad-hoc. Con --no-build verifica app/build.
 EOF
     exit 0
@@ -52,27 +52,29 @@ ok "Contents/MacOS/SidecarSwitch"
 plutil -lint "$BUNDLE/Contents/Info.plist" >/dev/null
 ok "Info.plist valido"
 
-ICON="$BUNDLE/Contents/Resources/AppIcon.icns"
-[ -s "$ICON" ] || die "icona assente o vuota: $ICON"
-file "$ICON" | grep -q "Mac OS X icon" || die "AppIcon.icns non ha il magic Mac OS X icon"
+VERIFY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/sidecar-switch-icon.XXXXXX")"
+for entry in AppIcon:AppIcon.icns AppIconSwitch:AppIconSwitch.icns; do
+  icon_name="${entry%%:*}"
+  icon_file="${entry##*:}"
+  icon_path="$BUNDLE/Contents/Resources/$icon_file"
+  [ -s "$icon_path" ] || die "icona assente o vuota: $icon_path"
+  file "$icon_path" | grep -q "Mac OS X icon" || die "$icon_file non ha il magic Mac OS X icon"
+  iconutil -c iconset "$icon_path" -o "$VERIFY_TMP/$icon_name.iconset"
+  for name in icon_16x16.png icon_16x16@2x.png icon_32x32.png icon_32x32@2x.png \
+              icon_128x128.png icon_128x128@2x.png icon_256x256.png icon_256x256@2x.png \
+              icon_512x512.png icon_512x512@2x.png; do
+    [ -s "$VERIFY_TMP/$icon_name.iconset/$name" ] || die "icona $icon_file: taglia mancante $name"
+  done
+done
 PLIST_ICON="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$BUNDLE/Contents/Info.plist")"
 [ "$PLIST_ICON" = "AppIcon" ] || die "CFBundleIconFile ($PLIST_ICON) != AppIcon"
 if /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$BUNDLE/Contents/Info.plist" >/dev/null 2>&1; then
   die "CFBundleIconName non deve essere presente (nessun asset catalog)"
 fi
-ok "icona presente, valida, CFBundleIconFile=AppIcon"
+ok "entrambe le icone presenti/valide, 10 taglie ciascuna, CFBundleIconFile=AppIcon"
 
 [ -f "$BUNDLE/Contents/Resources/LICENSE" ] || die "LICENSE assente in Contents/Resources"
 ok "LICENSE in Contents/Resources"
-
-VERIFY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/sidecar-switch-icon.XXXXXX")"
-iconutil -c iconset "$ICON" -o "$VERIFY_TMP/AppIcon.iconset"
-for name in icon_16x16.png icon_16x16@2x.png icon_32x32.png icon_32x32@2x.png \
-            icon_128x128.png icon_128x128@2x.png icon_256x256.png icon_256x256@2x.png \
-            icon_512x512.png icon_512x512@2x.png; do
-  [ -s "$VERIFY_TMP/AppIcon.iconset/$name" ] || die "icona: taglia mancante $name"
-done
-ok "icona: 10 taglie 16/32/64/128/256/512/1024"
 
 SIDECAR_ICON_WORKDIR="$VERIFY_TMP/gen" swift "$APP_DIR/make-icon.swift" "$VERIFY_TMP/second.icns"
 iconutil -c iconset "$VERIFY_TMP/second.icns" -o "$VERIFY_TMP/Second.iconset"
@@ -96,13 +98,13 @@ RESOURCES_VERSION="$(tr -d '[:space:]' < "$BUNDLE/Contents/Resources/VERSION")"
 [ "$VERSION" = "$RESOURCES_VERSION" ] || die "VERSION ($RESOURCES_VERSION) != TOOLS_VERSION ($VERSION)"
 PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$BUNDLE/Contents/Info.plist")"
 PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$BUNDLE/Contents/Info.plist")"
-[ "$PLIST_VERSION" = "0.1.1" ] || die "CFBundleShortVersionString ($PLIST_VERSION) != 0.1.1"
-[ "$PLIST_BUILD" = "2" ] || die "CFBundleVersion ($PLIST_BUILD) != 2"
+[ "$PLIST_VERSION" = "0.2.0" ] || die "CFBundleShortVersionString ($PLIST_VERSION) != 0.2.0"
+[ "$PLIST_BUILD" = "3" ] || die "CFBundleVersion ($PLIST_BUILD) != 3"
 if git -C "$REPO_DIR" rev-parse --short HEAD >/dev/null 2>&1; then
   EXPECTED="$(git -C "$REPO_DIR" rev-parse --short HEAD)"
   [ "$VERSION" = "$EXPECTED" ] || die "TOOLS_VERSION ($VERSION) != git HEAD ($EXPECTED)"
 fi
-ok "TOOLS_VERSION separato ($VERSION); bundle 0.1.1 (2)"
+ok "TOOLS_VERSION separato ($VERSION); bundle 0.2.0 (3)"
 
 check_arch() {
   local path="$1" label="$2" archs

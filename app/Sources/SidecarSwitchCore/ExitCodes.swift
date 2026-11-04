@@ -37,6 +37,19 @@ public enum ExitCodes {
         }
     }
 
+    public static func sectionStatus(_ exitCode: Int32) -> CommandStatus {
+        switch exitCode {
+        case 0:
+            return .ok
+        case 126, 127:
+            return .transport(.remoteBootstrap)
+        case 128...254:
+            return .transport(.remoteCrashed)
+        default:
+            return .exited(exitCode)
+        }
+    }
+
     public static func isTransportWhitelisted(stderr: String) -> Bool {
         let lower = stderr.lowercased()
         let patterns = [

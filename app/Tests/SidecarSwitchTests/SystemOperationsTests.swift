@@ -48,6 +48,20 @@ final class SystemOperationsTests: XCTestCase {
         XCTAssertEqual(counter.value, 0)
     }
 
+    func testK62HardenPersonaleSkipArrangeRunsNoCommand() async throws {
+        let home = try makeTempDirectory("ops-harden-skip")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let counter = Counter()
+        let runner = ClosureRunner { _ in
+            _ = counter.increment()
+            return CommandResult.launched(exitCode: 0)
+        }
+        let ops = makeOperations(home: home, runner: runner)
+        let outcome = await ops.harden(.personale, timeout: .seconds(1), skipArrange: true)
+        XCTAssertEqual(outcome, .ok)
+        XCTAssertEqual(counter.value, 0)
+    }
+
     func testHardenPersonaleUsesArrangeAndNeverMirror() async throws {
         let home = try makeTempDirectory("ops-harden-personale")
         defer { try? FileManager.default.removeItem(at: home) }

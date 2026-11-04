@@ -42,6 +42,7 @@ final class AppModel: ObservableObject {
     private let openURL: OpenURL
     private let operationsFactory: ((SwitchSettings) -> any SidecarOperations)?
     private let timingsOverride: Timings?
+    var dockIconController: DockIconController?
     private var cachedOperations: SystemOperations?
     private var cachedOperationsKey: OperationsCacheKey?
     private var hotkeyManager: HotkeyManager?
@@ -54,7 +55,8 @@ final class AppModel: ObservableObject {
         bundledToolsVersion: String? = AppPaths.bundledToolsVersion(),
         opener: OpenURL? = nil,
         operationsFactory: ((SwitchSettings) -> any SidecarOperations)? = nil,
-        timings: Timings? = nil
+        timings: Timings? = nil,
+        dockIconController: DockIconController? = nil
     ) {
         self.paths = paths
         self.supportDirectory = paths.supportDirectory
@@ -67,6 +69,7 @@ final class AppModel: ObservableObject {
         self.openURL = opener ?? { NSWorkspace.shared.open($0) }
         self.operationsFactory = operationsFactory
         self.timingsOverride = timings
+        self.dockIconController = dockIconController
 
         let loaded = store.load()
         self.settings = loaded.settings
@@ -148,6 +151,7 @@ final class AppModel: ObservableObject {
         )
 
         isTransitioning = true
+        dockIconController?.apply(isTransitioning: true)
         banner = nil
         logger.log(.info, "[\(identifier.uuidString.prefix(8))] toggle UI -> \(target.rawValue)")
         let gateDisabled = personaleGateDisabled
@@ -177,6 +181,7 @@ final class AppModel: ObservableObject {
             logging: logger
         )
         isTransitioning = true
+        dockIconController?.apply(isTransitioning: true)
         banner = nil
         let gateDisabled = personaleGateDisabled
         Task {
@@ -200,6 +205,7 @@ final class AppModel: ObservableObject {
             logging: logger
         )
         isTransitioning = true
+        dockIconController?.apply(isTransitioning: true)
         banner = nil
         Task {
             let outcome = await gate.run(transitionID: identifier) { token in
@@ -324,6 +330,7 @@ final class AppModel: ObservableObject {
 
     func handle(_ outcome: TransitionOutcome?) {
         isTransitioning = false
+        dockIconController?.apply(isTransitioning: false)
         guard let outcome else { return }
         phase = outcome.state
         actual = OutcomeStateReducer.actual(after: outcome, current: actual)

@@ -6,11 +6,16 @@ import ImageIO
 
 private let master: CGFloat = 1024
 
+enum IconVariant {
+    case normal
+    case switching
+}
+
 private func color(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor {
     CGColor(red: r, green: g, blue: b, alpha: a)
 }
 
-private func drawIcon(size: Int) -> CGImage? {
+private func drawIcon(size: Int, variant: IconVariant) -> CGImage? {
     let scale = CGFloat(size) / master
     let space = CGColorSpaceCreateDeviceRGB()
     guard let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
@@ -31,8 +36,15 @@ private func drawIcon(size: Int) -> CGImage? {
     ctx.saveGState()
     ctx.addPath(squircle)
     ctx.clip()
+    let gradientColors: [CGColor]
+    switch variant {
+    case .normal:
+        gradientColors = [color(0.09, 0.33, 0.86), color(0.03, 0.70, 0.70)]
+    case .switching:
+        gradientColors = [color(0.98, 0.72, 0.24), color(0.98, 0.58, 0.12)]
+    }
     let gradient = CGGradient(colorsSpace: space,
-                              colors: [color(0.09, 0.33, 0.86), color(0.03, 0.70, 0.70)] as CFArray,
+                              colors: gradientColors as CFArray,
                               locations: [0, 1])!
     ctx.drawLinearGradient(gradient,
                            start: CGPoint(x: rect.minX, y: rect.maxY),
@@ -138,7 +150,7 @@ private func workDirectory() -> URL {
     return URL(fileURLWithPath: base).appendingPathComponent("AppIcon.iconset", isDirectory: true)
 }
 
-private func generate(_ output: URL) throws {
+private func generate(_ output: URL, variant: IconVariant) throws {
     let iconset = workDirectory()
     let manager = FileManager.default
     try? manager.removeItem(at: iconset)
@@ -158,7 +170,7 @@ private func generate(_ output: URL) throws {
         ("icon_512x512@2x.png", 1024)
     ]
     for (name, size) in entries {
-        guard let image = drawIcon(size: size) else {
+        guard let image = drawIcon(size: size, variant: variant) else {
             throw NSError(domain: "make-icon", code: 3, userInfo: [NSLocalizedDescriptionKey: "render \(size) fallita"])
         }
         try writePNG(image, to: iconset.appendingPathComponent(name))
@@ -205,10 +217,11 @@ if arguments.count >= 4, arguments[1] == "--rgba-1024" {
 }
 
 guard arguments.count >= 2 else {
-    fail("usage: make-icon.swift <output.icns> | --rgba-1024 <input.png> <output.raw>")
+    fail("usage: make-icon.swift <output.icns> [switching] | --rgba-1024 <input.png> <output.raw>")
 }
+let variant: IconVariant = arguments.count >= 3 && arguments[2] == "switching" ? .switching : .normal
 do {
-    try generate(URL(fileURLWithPath: arguments[1]))
+    try generate(URL(fileURLWithPath: arguments[1]), variant: variant)
 } catch {
     fail("\(error)")
 }

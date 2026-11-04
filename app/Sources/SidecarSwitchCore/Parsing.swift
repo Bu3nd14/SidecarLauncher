@@ -21,6 +21,32 @@ public enum DisplayRule {
     public static func hasSidecar(_ displays: [DisplayInfo]) -> Bool {
         displays.contains { $0.vendor == sidecarVendor }
     }
+
+    public static func hasLiveSidecar(_ displays: [DisplayInfo]) -> Bool {
+        displays.contains(where: isLiveSidecar)
+    }
+
+    public static func isSidecarMirroringVirtual(_ displays: [DisplayInfo]) -> Bool {
+        let virtuals = displays.filter { $0.vendor == virtualVendor }
+        let sidecars = displays.filter { $0.vendor == sidecarVendor }
+        guard virtuals.count == 1, sidecars.count == 1 else { return false }
+        let virtual = virtuals[0]
+        let sidecar = sidecars[0]
+        return virtual.main
+            && sidecar.active
+            && !sidecar.asleep
+            && sidecar.mirrors == virtual.id
+    }
+}
+
+public struct VerifyReport: Sendable, Equatable {
+    public var outcome: VerifyOutcome
+    public var sidecarMirroringVirtual: Bool
+
+    public init(outcome: VerifyOutcome, sidecarMirroringVirtual: Bool = false) {
+        self.outcome = outcome
+        self.sidecarMirroringVirtual = sidecarMirroringVirtual
+    }
 }
 
 public enum ConnectedParser {

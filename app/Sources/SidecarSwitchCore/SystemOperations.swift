@@ -9,6 +9,9 @@ public protocol SidecarOperations: Sendable {
     func disconnect(_ host: Host, device: String, timeout: Duration) async -> CommandOutcome
     func connect(_ host: Host, device: String, timeout: Duration) async -> CommandOutcome
     func harden(_ host: Host, timeout: Duration) async -> HardenOutcome
+    func harden(_ host: Host, timeout: Duration, skipArrange: Bool) async -> HardenOutcome
+    func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
+                     timeout: Duration) async -> BatchExecution
     func beginRemoteGroup(_ kind: RemoteGroupKind) async
     func endRemoteGroup(_ kind: RemoteGroupKind) async
 }
@@ -24,6 +27,15 @@ public extension SidecarOperations {
 
     func beginRemoteGroup(_ kind: RemoteGroupKind) async {}
     func endRemoteGroup(_ kind: RemoteGroupKind) async {}
+
+    func harden(_ host: Host, timeout: Duration, skipArrange: Bool) async -> HardenOutcome {
+        await harden(host, timeout: timeout)
+    }
+
+    func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
+                     timeout: Duration) async -> BatchExecution {
+        .parseFailed(.invalidStructure("batching non disponibile"))
+    }
 }
 
 public struct LocalToolPaths: Sendable, Equatable {
@@ -235,9 +247,65 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
         return ExitCodes.commandOutcome(host: host, result: result)
     }
 
+    public func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
+                            timeout: Duration) async -> BatchExecution {
+        if let reason = await bootstrap.ensureReady() {
+            return .transport(reason)
+        }
+        let command: String
+        do {
+            command = try CommandBuilder.remoteBatchCommand(
+                kind: kind,
+                nonce: nonce,
+                binaryPath: config.remote.binaryPath,
+                connectedPath: config.remote.connectedPath,
+                dispidPath: config.remote.dispidPath,
+                settle: settle
+            )
+        } catch {
+            return .parseFailed(.invalidStructure("\(error)"))
+        }
+
+        let group: RemoteGroupKind = kind == .prereqs ? .prereqs : .probe
+        if kind == .verify {
+            coordinator.begin(.probe, cap: config.timings.remoteRetryBudget)
+        }
+        let result = await transport.execute(command, timeout: timeout, retryGroup: group)
+        if kind == .verify {
+            coordinator.end(.probe)
+        }
+
+        switch ExitCodes.ssh(result) {
+        case .ok:
+            guard !result.stdout.contains("<output troncato>") else {
+                return .parseFailed(.invalidStructure("output troncato"))
+            }
+            switch BatchParser.parse(nonce: nonce, stdout: result.stdout, expected: kind.expectedSections) {
+            case .success(let sections):
+                let summary = sections.map { "\($0.section)=\($0.exitCode)" }.joined(separator: ",")
+                logging.log(.debug, "batch \(kind.rawValue) sezioni: \(summary)")
+                return .sections(sections)
+            case .failure(let error):
+                return .parseFailed(error)
+            }
+        case .transport(let reason):
+            return .transport(reason)
+        default:
+            return .transport(.targetUnreachable)
+        }
+    }
+
     public func harden(_ host: Host, timeout: Duration) async -> HardenOutcome {
+        await harden(host, timeout: timeout, skipArrange: false)
+    }
+
+    public func harden(_ host: Host, timeout: Duration, skipArrange: Bool) async -> HardenOutcome {
         if host == .lavoro {
             logging.log(.info, "harden Lavoro: no-op")
+            return .ok
+        }
+        if skipArrange {
+            logging.log(.info, "harden Personale: arrange saltato (Sidecar già mirrorato su vdisp)")
             return .ok
         }
         guard let reason = await bootstrap.ensureReady() else {

@@ -7,6 +7,7 @@ public struct StateMachine: Sendable {
     public var deviceName: String
     public var logging: any SwitchLogging
     public var observer: (@Sendable (TransitionState) -> Void)?
+    public var nonceProvider: any NonceProviding
 
     public init(
         ops: any SidecarOperations,
@@ -14,6 +15,7 @@ public struct StateMachine: Sendable {
         sleeper: any Sleeping = RealSleeper(),
         deviceName: String = "iPad",
         logging: any SwitchLogging = NoopLogging(),
+        nonceProvider: any NonceProviding = SystemNonceProvider(),
         observer: (@Sendable (TransitionState) -> Void)? = nil
     ) {
         self.ops = ops
@@ -21,6 +23,7 @@ public struct StateMachine: Sendable {
         self.sleeper = sleeper
         self.deviceName = deviceName
         self.logging = logging
+        self.nonceProvider = nonceProvider
         self.observer = observer
     }
 
@@ -90,7 +93,8 @@ public struct StateMachine: Sendable {
 
         emit(.preflight)
         if let reason = await preflight(target: target, localReport: localReport, remoteReport: remoteReport,
-                                        local: local, remote: remote, deadline: deadline) {
+                                        local: local, remote: remote, deadline: deadline,
+                                        transitionID: transitionID) {
             return finish(failed(source?.location, reason,
                                  source.map { LocationUpdate.set($0.location) } ?? .unchanged,
                                  false))
@@ -162,7 +166,7 @@ public struct StateMachine: Sendable {
 
         if token.isCancelled {
             let post = await verify(target, transitionID: transitionID)
-            if post == .connected {
+            if post.outcome == .connected {
                 let location: Location = target == .lavoro ? .lavoro : .personale
                 return finish(TransitionOutcome(state: .done(holder(target)), persistence: .success(location),
                                                 message: "Annullato: sessione già su \(target.displayName).",
@@ -177,7 +181,7 @@ public struct StateMachine: Sendable {
         }
 
         let post = await verify(target, transitionID: transitionID)
-        switch post {
+        switch post.outcome {
         case .connected:
             if connectResult != .ok {
                 log(.warning, transitionID, "connect riportava errore ma la sessione è attiva")
@@ -188,7 +192,7 @@ public struct StateMachine: Sendable {
                                                 message: "Annullato: sessione già su \(target.displayName).",
                                                 actual: location))
             }
-            await harden(target, transitionID: transitionID)
+            await harden(target, transitionID: transitionID, skipArrange: post.sidecarMirroringVirtual)
             let location: Location = target == .lavoro ? .lavoro : .personale
             return finish(TransitionOutcome(state: .done(holder(target)), persistence: .success(location),
                                             message: "Sessione su \(target.displayName).", actual: location))
@@ -237,14 +241,14 @@ public struct StateMachine: Sendable {
         _ = await connectWithRetry(target, deadline: deadline, transitionID: transitionID)
 
         let post = await verify(target, transitionID: transitionID)
-        if post == .connected {
+        if post.outcome == .connected {
             await harden(target, transitionID: transitionID)
             let location: Location = target == .lavoro ? .lavoro : .personale
             return finish(TransitionOutcome(state: .done(holder(target)), persistence: .success(location),
                                             message: "Riconciliato: sessione su \(target.displayName).",
                                             actual: location))
         }
-        let reason: Reason = post == .displayUnverified ? .displayUnverified : .targetUnknown
+        let reason: Reason = post.outcome == .displayUnverified ? .displayUnverified : .targetUnknown
         return finish(failed(actual, reason, .unchanged, true))
     }
 
@@ -269,12 +273,12 @@ public struct StateMachine: Sendable {
         emit(.connectingTarget(.lavoro, attempt: 1))
         _ = await connectWithRetry(.lavoro, deadline: deadline, transitionID: transitionID)
         let post = await verify(.lavoro, transitionID: transitionID)
-        if post == .connected {
+        if post.outcome == .connected {
             await harden(.lavoro, transitionID: transitionID)
             return finish(TransitionOutcome(state: .done(.lavoro), persistence: .success(.lavoro),
                                             message: "Connesso a Lavoro (forzato).", actual: .lavoro))
         }
-        let reason: Reason = post == .displayUnverified ? .displayUnverified : .targetUnknown
+        let reason: Reason = post.outcome == .displayUnverified ? .displayUnverified : .targetUnknown
         return finish(failed(nil, reason, .unchanged, nil))
     }
 
@@ -284,7 +288,8 @@ public struct StateMachine: Sendable {
         remoteReport: ProbeReport,
         local: ClassifiedProbe,
         remote: ClassifiedProbe,
-        deadline: Deadline
+        deadline: Deadline,
+        transitionID: UUID
     ) async -> Reason? {
         switch target {
         case .personale:
@@ -294,7 +299,7 @@ public struct StateMachine: Sendable {
             if remoteReport.state == .unknown {
                 return .targetUnreachable
             }
-            return await remotePrereqs(deadline: deadline)
+            return await remotePrereqs(deadline: deadline, transitionID: transitionID)
         case .lavoro:
             if localReport.state == .unknown {
                 return .localPrivateAPI
@@ -327,14 +332,67 @@ public struct StateMachine: Sendable {
         return nil
     }
 
-    private func remotePrereqs(deadline: Deadline) async -> Reason? {
+    private func remotePrereqs(deadline: Deadline, transitionID: UUID) async -> Reason? {
         await ops.beginRemoteGroup(.prereqs)
-        let result = await remotePrereqsBody(deadline: deadline)
+        let result = await remotePrereqsBody(deadline: deadline, transitionID: transitionID)
         await ops.endRemoteGroup(.prereqs)
         return result
     }
 
-    private func remotePrereqsBody(deadline: Deadline) async -> Reason? {
+    private func remotePrereqsBody(deadline: Deadline, transitionID: UUID) async -> Reason? {
+        let batch = await ops.remoteBatch(
+            .prereqs,
+            nonce: nonceProvider.makeNonce(),
+            settle: .zero,
+            timeout: deadline.capped(timings.remoteProbeTimeout)
+        )
+        switch batch {
+        case .transport(let reason):
+            return reason
+        case .parseFailed(let error):
+            log(.warning, transitionID, "preflight batch non valido, fallback separato: \(error)")
+            return await remotePrereqsSeparate(deadline)
+        case .sections(let sections):
+            guard sections.count == 2,
+                  sections[0].section == "devices",
+                  sections[1].section == "dispid" else {
+                log(.warning, transitionID, "preflight batch incompleto, fallback separato")
+                return await remotePrereqsSeparate(deadline)
+            }
+            return classifyPrereqsSections(devices: sections[0], dispid: sections[1])
+        }
+    }
+
+    private func classifyPrereqsSections(devices section: RemoteSectionResult,
+                                         dispid dispidSection: RemoteSectionResult) -> Reason? {
+        let devices = BatchClassification.devices(section)
+        switch devices.status {
+        case .ok:
+            if !Classifier.deviceMatches(devices.names, configuredName: deviceName) {
+                return .preflightRemote
+            }
+        case .transport(let reason):
+            return reason
+        case .exited(126), .exited(127):
+            return .remoteBootstrap
+        case .timedOut, .crashed, .launchFailed, .exited(_):
+            return .preflightRemote
+        }
+
+        let displays = BatchClassification.displays(dispidSection)
+        switch displays.status {
+        case .ok:
+            return DisplayRule.hasVirtual(displays.displays) ? nil : .preflightRemoteVdispMissing
+        case .transport(let reason):
+            return reason
+        case .exited(126), .exited(127):
+            return .remoteBootstrap
+        case .timedOut, .crashed, .launchFailed, .exited(_):
+            return .preflightRemoteVdispMissing
+        }
+    }
+
+    private func remotePrereqsSeparate(_ deadline: Deadline) async -> Reason? {
         let devices = await ops.devices(.personale, timeout: deadline.capped(timings.remoteProbeTimeout))
         switch devices.status {
         case .ok:
@@ -489,17 +547,80 @@ public struct StateMachine: Sendable {
         log(.warning, transitionID, "settle-poll senza device su \(host.rawValue) entro \(budget.inSeconds)s")
     }
 
-    private func verify(_ host: Host, transitionID: UUID) async -> VerifyOutcome {
+    private func verify(_ host: Host, transitionID: UUID) async -> VerifyReport {
+        if host == .lavoro {
+            return await verifySeparate(host, transitionID: transitionID)
+        }
+
+        emit(.verifyingTarget(holder(host), display: false))
+        let batch = await ops.remoteBatch(
+            .verify,
+            nonce: nonceProvider.makeNonce(),
+            settle: timings.settle,
+            timeout: timings.remoteProbeTimeout
+        )
+        switch batch {
+        case .transport(let reason):
+            log(.warning, transitionID, "verify batch: trasporto fallito (\(reason.rawValue)), nessun fallback")
+            return VerifyReport(outcome: .unknown)
+        case .parseFailed(let error):
+            log(.warning, transitionID, "verify batch non valido, fallback separato: \(error)")
+            return await verifySeparate(host, transitionID: transitionID)
+        case .sections(let sections):
+            guard sections.count == 3,
+                  sections[0].section == "connected_a",
+                  sections[1].section == "connected_b",
+                  sections[2].section == "dispid" else {
+                log(.warning, transitionID, "verify batch incompleto, fallback separato")
+                return await verifySeparate(host, transitionID: transitionID)
+            }
+            return await verifyBatched(sections, host: host, transitionID: transitionID)
+        }
+    }
+
+    private func verifyBatched(_ sections: [RemoteSectionResult], host: Host,
+                               transitionID: UUID) async -> VerifyReport {
+        let first = BatchClassification.probe(sections[0])
+        let second = BatchClassification.probe(sections[1])
+        let a = classify(first)
+        let b = classify(second)
+        if a == .disconnected && b == .disconnected { return VerifyReport(outcome: .disconnected) }
+        guard a == .connectediPad && b == .connectediPad else {
+            log(.warning, transitionID, "verify batch campioni incoerenti: \(a)/\(b)")
+            return VerifyReport(outcome: .unknown)
+        }
+
+        emit(.verifyingTarget(holder(host), display: true))
+        var last = BatchClassification.displays(sections[2])
+        let start = ContinuousClock().now
+        while true {
+            if last.status == .ok, DisplayRule.hasLiveSidecar(last.displays) {
+                return VerifyReport(outcome: .connected,
+                                    sidecarMirroringVirtual: DisplayRule.isSidecarMirroringVirtual(last.displays))
+            }
+            await sleeper.sleep(timings.displayPollInterval)
+            last = await ops.displays(host, timeout: timings.probeTimeout(for: host))
+            if last.status == .ok, DisplayRule.hasLiveSidecar(last.displays) {
+                return VerifyReport(outcome: .connected,
+                                    sidecarMirroringVirtual: DisplayRule.isSidecarMirroringVirtual(last.displays))
+            }
+            if ContinuousClock().now - start >= timings.displayWait {
+                return VerifyReport(outcome: .displayUnverified)
+            }
+        }
+    }
+
+    private func verifySeparate(_ host: Host, transitionID: UUID) async -> VerifyReport {
         emit(.verifyingTarget(holder(host), display: false))
         let first = await ops.probe(host, timeout: timings.verifyProbeTimeout(for: host))
         await sleeper.sleep(timings.settle)
         let second = await ops.probe(host, timeout: timings.verifyProbeTimeout(for: host))
         let a = classify(first)
         let b = classify(second)
-        if a == .disconnected && b == .disconnected { return .disconnected }
+        if a == .disconnected && b == .disconnected { return VerifyReport(outcome: .disconnected) }
         guard a == .connectediPad && b == .connectediPad else {
             log(.warning, transitionID, "verify campioni incoerenti: \(a)/\(b)")
-            return .unknown
+            return VerifyReport(outcome: .unknown)
         }
 
         emit(.verifyingTarget(holder(host), display: true))
@@ -508,15 +629,16 @@ public struct StateMachine: Sendable {
         while iterations < 1000 {
             iterations += 1
             let displays = await ops.displays(host, timeout: timings.probeTimeout(for: host))
-            if displays.status == .ok, displays.displays.contains(where: DisplayRule.isLiveSidecar) {
-                return .connected
+            if displays.status == .ok, DisplayRule.hasLiveSidecar(displays.displays) {
+                return VerifyReport(outcome: .connected,
+                                    sidecarMirroringVirtual: DisplayRule.isSidecarMirroringVirtual(displays.displays))
             }
             if ContinuousClock().now - start >= timings.displayWait {
-                return .displayUnverified
+                return VerifyReport(outcome: .displayUnverified)
             }
             await sleeper.sleep(timings.displayPollInterval)
         }
-        return .displayUnverified
+        return VerifyReport(outcome: .displayUnverified)
     }
 
     private func rollback(source: Holder, transitionID: UUID, token: CancellationToken) async -> TransitionOutcome {
@@ -528,7 +650,7 @@ public struct StateMachine: Sendable {
 
         if state == .connectediPad {
             let post = await verify(source.host, transitionID: transitionID)
-            return await rollbackOutcome(post, source: source, transitionID: transitionID)
+            return await rollbackOutcome(post.outcome, source: source, transitionID: transitionID)
         }
         if state == .unknown || state == .unreachable || state == .foreignDevice || state == .tooMany {
             return failed(nil, .incoherent, .unchanged, true)
@@ -541,7 +663,7 @@ public struct StateMachine: Sendable {
         let connectDeadline = Deadline(after: connectBudget)
         _ = await connectWithRetry(source.host, deadline: connectDeadline, transitionID: transitionID)
         let post = await verify(source.host, transitionID: transitionID)
-        return await rollbackOutcome(post, source: source, transitionID: transitionID)
+        return await rollbackOutcome(post.outcome, source: source, transitionID: transitionID)
     }
 
     private func rollbackOutcome(_ post: VerifyOutcome, source: Holder, transitionID: UUID) async -> TransitionOutcome {
@@ -559,13 +681,13 @@ public struct StateMachine: Sendable {
         }
     }
 
-    private func harden(_ host: Host, transitionID: UUID) async {
+    private func harden(_ host: Host, transitionID: UUID, skipArrange: Bool = false) async {
         if host == .lavoro {
             log(.info, transitionID, "harden Lavoro: no-op (layout esteso lasciato a macOS)")
             return
         }
         emit(.hardening(.personale))
-        _ = await ops.harden(host, timeout: timings.hardeningTimeout)
+        _ = await ops.harden(host, timeout: timings.hardeningTimeout, skipArrange: skipArrange)
     }
 
     private func cancelledBeforeRelease(actual: Location) -> TransitionOutcome {

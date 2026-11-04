@@ -9,6 +9,7 @@ enum Op: Equatable, CustomStringConvertible {
     case disconnect(SwitchHost, String)
     case connect(SwitchHost, String)
     case harden(SwitchHost)
+    case batch(RemoteBatchKind)
 
     var description: String {
         switch self {
@@ -18,6 +19,7 @@ enum Op: Equatable, CustomStringConvertible {
         case .disconnect(let host, let device): return "disconnect(\(host.rawValue), \(device))"
         case .connect(let host, let device): return "connect(\(host.rawValue), \(device))"
         case .harden(let host): return "harden(\(host.rawValue))"
+        case .batch(let kind): return "batch(\(kind.rawValue))"
         }
     }
 }
@@ -36,6 +38,8 @@ final class RecordingOperations: SidecarOperations, @unchecked Sendable {
     var probeDelay: Duration = .zero
     var devicesDelay: Duration = .zero
     var devicesSleeper: (any Sleeping)?
+    var batchExecutor: (@Sendable (RemoteBatchKind) -> BatchExecution)?
+    private var recordedHardenSkips: [SwitchHost: Bool] = [:]
     var onOperation: (@Sendable (Op) -> Void)?
     private var recordedDeviceTimeouts: [Duration] = []
     var deviceTimeouts: [Duration] {
@@ -194,8 +198,34 @@ final class RecordingOperations: SidecarOperations, @unchecked Sendable {
     }
 
     func harden(_ host: SwitchHost, timeout: Duration) async -> HardenOutcome {
+        await harden(host, timeout: timeout, skipArrange: false)
+    }
+
+    private func recordHardenSkip(_ host: SwitchHost, _ skipArrange: Bool) {
+        lock.lock()
+        recordedHardenSkips[host] = skipArrange
+        lock.unlock()
+    }
+
+    func harden(_ host: SwitchHost, timeout: Duration, skipArrange: Bool) async -> HardenOutcome {
+        recordHardenSkip(host, skipArrange)
         append(.harden(host))
         return popHarden(host)
+    }
+
+    func hardenSkip(_ host: SwitchHost) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedHardenSkips[host]
+    }
+
+    func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
+                     timeout: Duration) async -> BatchExecution {
+        guard let batchExecutor else {
+            return .parseFailed(.invalidStructure("batch non configurato"))
+        }
+        append(.batch(kind))
+        return batchExecutor(kind)
     }
 }
 
