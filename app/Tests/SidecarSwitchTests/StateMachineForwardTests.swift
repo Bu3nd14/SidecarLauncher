@@ -4,6 +4,7 @@ import XCTest
 final class StateMachineForwardTests: XCTestCase {
     func testK3LavoroToPersonaleExactOrder() async {
         let ops = RecordingOperations()
+        ops.setSessionEnabled(true)
         ops.setProbes(.lavoro, [Fixtures.connected(), Fixtures.connected(), Fixtures.disconnected()])
         ops.setProbes(.personale, [Fixtures.disconnected(), Fixtures.connected(), Fixtures.connected()])
         ops.setDevices(.personale, [Fixtures.devicesOK()])
@@ -31,10 +32,12 @@ final class StateMachineForwardTests: XCTestCase {
         XCTAssertEqual(outcome.state, .done(.personale))
         XCTAssertEqual(outcome.persistence, .success(.personale))
         XCTAssertEqual(outcome.actual, .personale)
+        XCTAssertEqual(ops.ends, 1)
     }
 
     func testK4PersonaleToLavoroExactOrder() async {
         let ops = RecordingOperations()
+        ops.setSessionEnabled(true)
         ops.setProbes(.lavoro, [Fixtures.disconnected(), Fixtures.connected(), Fixtures.connected()])
         ops.setProbes(.personale, [Fixtures.connected(), Fixtures.connected(), Fixtures.disconnected()])
         ops.setDevices(.lavoro, [Fixtures.devicesOK()])
@@ -60,6 +63,7 @@ final class StateMachineForwardTests: XCTestCase {
         ])
         XCTAssertEqual(outcome.state, .done(.lavoro))
         XCTAssertEqual(outcome.persistence, .success(.lavoro))
+        XCTAssertEqual(ops.ends, 1)
     }
 
     func testK9NoopHardensAndPersistsWithoutConnect() async {

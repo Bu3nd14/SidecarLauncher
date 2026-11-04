@@ -182,6 +182,8 @@ public final class SSHTransport: @unchecked Sendable {
     private let retryBudget: Duration
     private let sleeper: any Sleeping
     private let coordinator: RemoteRetryCoordinator
+    private let probeFloor: Duration
+    private let sessionSentinel: (@Sendable (URL) -> Bool)?
     private let lock = NSLock()
     private var audited = false
     private var cachedConfig: EffectiveSSHConfig?
@@ -195,6 +197,8 @@ public final class SSHTransport: @unchecked Sendable {
                 retryAttempts: Int = 2,
                 retryBackoff: Duration = .seconds(2),
                 retryBudget: Duration = .seconds(40),
+                probeFloor: Duration = .seconds(25),
+                sessionSentinel: (@Sendable (URL) -> Bool)? = nil,
                 sleeper: any Sleeping = RealSleeper(),
                 coordinator: RemoteRetryCoordinator = RemoteRetryCoordinator()) {
         self.remote = remote
@@ -210,6 +214,8 @@ public final class SSHTransport: @unchecked Sendable {
         self.retryAttempts = retryAttempts
         self.retryBackoff = retryBackoff
         self.retryBudget = retryBudget
+        self.probeFloor = probeFloor
+        self.sessionSentinel = sessionSentinel
         self.sleeper = sleeper
         self.coordinator = coordinator
     }
@@ -290,12 +296,93 @@ public final class SSHTransport: @unchecked Sendable {
         return config
     }
 
-    public func execute(_ command: String, timeout: Duration, retryGroup: RemoteGroupKind? = nil) async -> CommandResult {
+    public func beginSession() -> RemoteSession? {
+        guard !remote.host.isEmpty else { return nil }
+        assert(ControlSocket.controlPersistExceedsMaxGap)
+        let runDirectory = AppPaths(home: home).runDirectory
+        let path = ControlSocket.path(runDirectory: runDirectory.path, host: remote.host,
+                                      user: remote.user, port: remote.port)
+        guard ControlSocket.pathLengthValid(path) else {
+            logging.log(.warning, "ControlSocket disabilitato: path \(path.utf8.count) byte > \(ControlSocket.maxPathBytes) (\(path))")
+            return nil
+        }
+        guard !ControlSocket.pathContainsPercent(path) else {
+            logging.log(.warning, "ControlSocket disabilitato: path contiene '%' (\(path))")
+            return nil
+        }
+
+        let manager = FileManager.default
+        do {
+            try manager.createDirectory(at: runDirectory, withIntermediateDirectories: true)
+        } catch {
+            logging.log(.warning, "ControlSocket disabilitato: directory \(runDirectory.path) non creabile (\(error))")
+            return nil
+        }
+        chmod(runDirectory.path, 0o700)
+
+        if let sessionSentinel {
+            guard sessionSentinel(runDirectory) else {
+                logging.log(.warning, "ControlSocket disabilitato: sentinella fallita in \(runDirectory.path)")
+                return nil
+            }
+        } else {
+            let sentinel = runDirectory.appendingPathComponent(".ssc-sentinel-\(UUID().uuidString)")
+            guard manager.createFile(atPath: sentinel.path, contents: Data(),
+                                     attributes: [.posixPermissions: 0o600]) else {
+                logging.log(.warning, "ControlSocket disabilitato: dir \(runDirectory.path) non scrivibile (sentinella)")
+                return nil
+            }
+            do {
+                try manager.removeItem(at: sentinel)
+            } catch {
+                logging.log(.warning, "ControlSocket disabilitato: sentinella non rimovibile in \(runDirectory.path) (\(error))")
+                return nil
+            }
+        }
+
+        logging.log(.info, "ControlSocket attivo: \(path)")
+        return RemoteSession(controlPath: path)
+    }
+
+    public func endSession(_ session: RemoteSession?) async {
+        guard let session else { return }
+        let environment = await environmentProvider.capture()?.variables ?? BaseEnvironment.make()
+        do {
+            let argv = try CommandBuilder.sshControlArguments(
+                remote: remote,
+                controlPath: session.controlPath,
+                verb: "exit",
+                executable: executable,
+                environment: environment,
+                home: home,
+                sshConfigPath: sshConfigPath
+            )
+            var spec = CommandSpec(executable: argv[0], arguments: Array(argv.dropFirst()))
+            spec.environment = environment
+            let result = await runner.run(spec, timeout: ControlSocket.controlCommandTimeout)
+            if result.exitCode == 0, !result.timedOut, result.signal == nil {
+                logging.log(.debug, "ControlSocket chiuso (-O exit): \(session.controlPath)")
+                return
+            }
+            logging.log(.warning, "ControlSocket -O exit fallito (exit \(result.exitCode.map(String.init) ?? "timeout")): unlink \(session.controlPath)")
+        } catch {
+            logging.log(.warning, "ControlSocket -O exit non eseguibile (\(error)): unlink \(session.controlPath)")
+        }
+        try? FileManager.default.removeItem(atPath: session.controlPath)
+    }
+
+    public func execute(_ command: String, timeout: Duration, retryGroup: RemoteGroupKind? = nil,
+                        session: RemoteSession? = nil,
+                        allowFirstCallFallback: Bool = false) async -> CommandResult {
         do {
             try knownHosts.ensureFiles()
         } catch {
             return CommandResult(launchError: "known_hosts: \(error)")
         }
+
+        let inSession = session.map { !$0.disabled } ?? false
+        let firstCommand = inSession ? session?.claimFirstCommand() ?? false : false
+        let controlPath = inSession ? session?.controlPath : nil
 
         var attempt = 1
         var result = CommandResult(launchError: "nessun tentativo")
@@ -308,7 +395,7 @@ public final class SSHTransport: @unchecked Sendable {
             if attemptTimeout <= .zero {
                 return CommandResult(exitCode: nil, timedOut: true)
             }
-            result = await runOnce(command, timeout: attemptTimeout)
+            result = await runOnce(command, timeout: attemptTimeout, controlPath: controlPath)
             guard let retryGroup,
                   result.exitCode == 255,
                   ExitCodes.isTransportWhitelisted(stderr: result.stderr),
@@ -335,12 +422,29 @@ public final class SSHTransport: @unchecked Sendable {
             logging.log(.error, "ssh 255 non riconosciuto host=\(remote.host) exit=255: \(LogRedaction.redact(result.stderr))")
             logging.log(.error, "config SSH o proxy/CA non applicati? controlla VPN/rete")
         }
-        return result
+
+        guard inSession, result.exitCode == 255, firstCommand else { return result }
+        session?.disable()
+        guard allowFirstCallFallback else { return result }
+
+        let remaining: Duration
+        if let retryGroup {
+            remaining = coordinator.deadline(retryGroup, cap: retryBudget, create: false)?.remaining ?? .zero
+        } else {
+            remaining = timeout
+        }
+        guard remaining >= probeFloor else {
+            logging.log(.warning, "fallback plain non eseguito: residuo \(remaining.inSeconds)s < \(probeFloor.inSeconds)s")
+            return result
+        }
+        let fallbackTimeout = min(timeout, remaining)
+        logging.log(.warning, "fallback plain dopo 255 della prima chiamata in-session (mux disabilitato)")
+        return await runOnce(command, timeout: fallbackTimeout, controlPath: nil)
     }
 
     private var sshConnectTimeoutDuration: Duration { .seconds(ssh.connectTimeout) }
 
-    private func runOnce(_ command: String, timeout: Duration) async -> CommandResult {
+    private func runOnce(_ command: String, timeout: Duration, controlPath: String?) async -> CommandResult {
         let first = knownHosts.consumeFirstUse(host: remote.host, port: remote.port)
         do {
             var spec = try CommandBuilder.sshSpec(
@@ -351,7 +455,10 @@ public final class SSHTransport: @unchecked Sendable {
                 firstConnect: first,
                 home: home,
                 sshConfigPath: sshConfigPath,
-                executable: executable
+                executable: executable,
+                controlPath: controlPath,
+                controlPersist: controlPath == nil ? nil : ControlSocket.controlPersistSeconds,
+                logging: logging
             )
             spec.environment = await environmentProvider.capture()?.variables ?? BaseEnvironment.make()
             logging.log(.debug, "ssh \(remote.host) \(LogRedaction.redact(command))")

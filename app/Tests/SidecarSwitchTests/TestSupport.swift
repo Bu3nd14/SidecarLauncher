@@ -40,6 +40,11 @@ final class RecordingOperations: SidecarOperations, @unchecked Sendable {
     var devicesSleeper: (any Sleeping)?
     var batchExecutor: (@Sendable (RemoteBatchKind) -> BatchExecution)?
     private var recordedHardenSkips: [SwitchHost: Bool] = [:]
+    private var sessionEnabled = false
+    private var recordedLifecycle: [String] = []
+    private var recordedSessionOps: [(Op, Bool)] = []
+    private var sessionBegins = 0
+    private var sessionEnds = 0
     var onOperation: (@Sendable (Op) -> Void)?
     private var recordedDeviceTimeouts: [Duration] = []
     var deviceTimeouts: [Duration] {
@@ -61,6 +66,7 @@ final class RecordingOperations: SidecarOperations, @unchecked Sendable {
     private func append(_ op: Op) {
         lock.lock()
         recorded.append(op)
+        recordedLifecycle.append("do:\(op.description)")
         lock.unlock()
         onOperation?(op)
     }
@@ -91,6 +97,116 @@ final class RecordingOperations: SidecarOperations, @unchecked Sendable {
 
     func setHarden(_ host: SwitchHost, _ outcomes: [HardenOutcome]) {
         lock.lock(); hardenOutcomes[host] = outcomes; lock.unlock()
+    }
+
+    func setSessionEnabled(_ enabled: Bool) {
+        lock.lock(); sessionEnabled = enabled; lock.unlock()
+    }
+
+    var lifecycle: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedLifecycle
+    }
+
+    var sessionOperations: [(op: Op, session: Bool)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedSessionOps
+    }
+
+    var begins: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return sessionBegins
+    }
+
+    var ends: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return sessionEnds
+    }
+
+    private func noteSession(_ op: Op, _ session: RemoteSession?) {
+        lock.lock()
+        recordedLifecycle.append("\(op.description)[\(session == nil ? "plain" : "session")]")
+        recordedSessionOps.append((op, session != nil))
+        lock.unlock()
+    }
+
+    private func recordSessionBegin() -> (enabled: Bool, count: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        sessionBegins += 1
+        recordedLifecycle.append("begin")
+        return (sessionEnabled, sessionBegins)
+    }
+
+    private func recordSessionEnd(_ session: RemoteSession?) {
+        lock.lock()
+        sessionEnds += 1
+        recordedLifecycle.append("end[\(session == nil ? "nil" : "session")]")
+        lock.unlock()
+    }
+
+    func beginRemoteSession() async -> RemoteSession? {
+        let value = recordSessionBegin()
+        return value.enabled ? RemoteSession(controlPath: "/tmp/ssc-recording-\(value.count).sock") : nil
+    }
+
+    func endRemoteSession(_ session: RemoteSession?) async {
+        recordSessionEnd(session)
+    }
+
+    func probe(_ host: SwitchHost, timeout: Duration, session: RemoteSession?) async -> ProbeReport {
+        noteSession(.probe(host), session)
+        return await probe(host, timeout: timeout)
+    }
+
+    func probe(_ host: SwitchHost, timeout: Duration, retry: Bool,
+               session: RemoteSession?) async -> ProbeReport {
+        noteSession(.probe(host), session)
+        return await probe(host, timeout: timeout, retry: retry)
+    }
+
+    func devices(_ host: SwitchHost, timeout: Duration, session: RemoteSession?) async -> DevicesReport {
+        noteSession(.devices(host), session)
+        return await devices(host, timeout: timeout)
+    }
+
+    func devices(_ host: SwitchHost, timeout: Duration, retry: Bool,
+                 session: RemoteSession?) async -> DevicesReport {
+        noteSession(.devices(host), session)
+        return await devices(host, timeout: timeout, retry: retry)
+    }
+
+    func displays(_ host: SwitchHost, timeout: Duration, session: RemoteSession?) async -> DisplaysReport {
+        noteSession(.displays(host), session)
+        return await displays(host, timeout: timeout)
+    }
+
+    func disconnect(_ host: SwitchHost, device: String, timeout: Duration,
+                    session: RemoteSession?) async -> CommandOutcome {
+        noteSession(.disconnect(host, device), session)
+        return await disconnect(host, device: device, timeout: timeout)
+    }
+
+    func connect(_ host: SwitchHost, device: String, timeout: Duration,
+                 session: RemoteSession?) async -> CommandOutcome {
+        noteSession(.connect(host, device), session)
+        return await connect(host, device: device, timeout: timeout)
+    }
+
+    func harden(_ host: SwitchHost, timeout: Duration, skipArrange: Bool,
+                session: RemoteSession?) async -> HardenOutcome {
+        noteSession(.harden(host), session)
+        return await harden(host, timeout: timeout, skipArrange: skipArrange)
+    }
+
+    func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
+                     timeout: Duration, session: RemoteSession?) async -> BatchExecution {
+        noteSession(.batch(kind), session)
+        return await remoteBatch(kind, nonce: nonce, settle: settle, timeout: timeout)
     }
 
     private func popProbe(_ host: SwitchHost) -> ProbeReport {

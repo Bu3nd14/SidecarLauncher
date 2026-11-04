@@ -197,6 +197,72 @@ final class CommandBuilderTests: XCTestCase {
                                                              command: "true", firstConnect: false, home: home))
     }
 
+    func testK70MuxOptionsOnlyInSessionAndBeforeTarget() throws {
+        let controlPath = "/Users/test/.sidecar-switch/run/ssc-0123456789abcdef.sock"
+        let plain = try CommandBuilder.sshArguments(remote: remote, ssh: ssh, knownHostsPath: knownHosts,
+                                                    command: "true", firstConnect: false, home: home)
+        XCTAssertFalse(plain.contains("ControlMaster=auto"))
+        XCTAssertFalse(plain.contains { $0.hasPrefix("ControlPath=") })
+        XCTAssertFalse(plain.contains { $0.hasPrefix("ControlPersist=") })
+
+        let mux = try CommandBuilder.sshArguments(remote: remote, ssh: ssh, knownHostsPath: knownHosts,
+                                                  command: "true", firstConnect: false, home: home,
+                                                  controlPath: controlPath, controlPersist: 20)
+        let master = try XCTUnwrap(mux.firstIndex(of: "ControlMaster=auto"))
+        let path = try XCTUnwrap(mux.firstIndex(of: "ControlPath=\(controlPath)"))
+        let persist = try XCTUnwrap(mux.firstIndex(of: "ControlPersist=20"))
+        let target = try XCTUnwrap(mux.firstIndex(of: "utente@personale.local"))
+        XCTAssertLessThan(master, path)
+        XCTAssertLessThan(path, persist)
+        XCTAssertLessThan(persist, target)
+        XCTAssertEqual(mux[target + 1], "true")
+        XCTAssertEqual(mux.filter { $0 == "ControlMaster=auto" }.count, 1)
+    }
+
+    func testK82BuilderOmitsMuxForInvalidPathAndLogsWarning() throws {
+        let logger = ArrayLogging()
+        let longPath = "/" + String(repeating: "a", count: 100) + ".sock"
+        let args = try CommandBuilder.sshArguments(remote: remote, ssh: ssh, knownHostsPath: knownHosts,
+                                                   command: "true", firstConnect: false, home: home,
+                                                   controlPath: longPath, controlPersist: 20,
+                                                   logging: logger)
+        XCTAssertFalse(args.contains("ControlMaster=auto"))
+        XCTAssertFalse(args.contains { $0.hasPrefix("ControlPath=") })
+        XCTAssertTrue(logger.contains("ControlSocket omesso"))
+
+        let percentLogger = ArrayLogging()
+        let percentPath = "/Users/test/%run/ssc-0123456789abcdef.sock"
+        let percentArgs = try CommandBuilder.sshArguments(remote: remote, ssh: ssh, knownHostsPath: knownHosts,
+                                                          command: "true", firstConnect: false, home: home,
+                                                          controlPath: percentPath, controlPersist: 20,
+                                                          logging: percentLogger)
+        XCTAssertFalse(percentArgs.contains("ControlMaster=auto"))
+        XCTAssertTrue(percentLogger.contains("percent=true"))
+    }
+
+    func testK87ControlArguments() throws {
+        let controlPath = "/Users/test/.sidecar-switch/run/ssc-0123456789abcdef.sock"
+        let args = try CommandBuilder.sshControlArguments(
+            remote: remote,
+            controlPath: controlPath,
+            verb: "exit",
+            executable: "/tmp/fake-ssh",
+            environment: ["PATH": "/usr/bin:/bin"],
+            home: home,
+            sshConfigPath: "/Users/test/.ssh/config"
+        )
+        XCTAssertEqual(args.first, "/tmp/fake-ssh")
+        XCTAssertTrue(args.contains("-F"))
+        XCTAssertEqual(args[args.firstIndex(of: "-F")! + 1], "/Users/test/.ssh/config")
+        XCTAssertEqual(args[args.firstIndex(of: "-O")! + 1], "exit")
+        XCTAssertFalse(args.contains("check"))
+        XCTAssertTrue(args.contains("ControlPath=\(controlPath)"))
+        XCTAssertEqual(args.last, "utente@personale.local")
+        XCTAssertFalse(args.contains("-i"))
+        XCTAssertFalse(args.contains("BatchMode=yes"))
+        XCTAssertFalse(args.contains("-O check"))
+    }
+
     func testHostileRemoteCommandDoesNotCreateFiles() throws {
         let directory = try makeTempDirectory("command-builder")
         defer { try? FileManager.default.removeItem(at: directory) }

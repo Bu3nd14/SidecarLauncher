@@ -14,6 +14,18 @@ public protocol SidecarOperations: Sendable {
                      timeout: Duration) async -> BatchExecution
     func beginRemoteGroup(_ kind: RemoteGroupKind) async
     func endRemoteGroup(_ kind: RemoteGroupKind) async
+    func beginRemoteSession() async -> RemoteSession?
+    func endRemoteSession(_ session: RemoteSession?) async
+    func probe(_ host: Host, timeout: Duration, session: RemoteSession?) async -> ProbeReport
+    func probe(_ host: Host, timeout: Duration, retry: Bool, session: RemoteSession?) async -> ProbeReport
+    func devices(_ host: Host, timeout: Duration, session: RemoteSession?) async -> DevicesReport
+    func devices(_ host: Host, timeout: Duration, retry: Bool, session: RemoteSession?) async -> DevicesReport
+    func displays(_ host: Host, timeout: Duration, session: RemoteSession?) async -> DisplaysReport
+    func disconnect(_ host: Host, device: String, timeout: Duration, session: RemoteSession?) async -> CommandOutcome
+    func connect(_ host: Host, device: String, timeout: Duration, session: RemoteSession?) async -> CommandOutcome
+    func harden(_ host: Host, timeout: Duration, skipArrange: Bool, session: RemoteSession?) async -> HardenOutcome
+    func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
+                     timeout: Duration, session: RemoteSession?) async -> BatchExecution
 }
 
 public extension SidecarOperations {
@@ -35,6 +47,50 @@ public extension SidecarOperations {
     func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
                      timeout: Duration) async -> BatchExecution {
         .parseFailed(.invalidStructure("batching non disponibile"))
+    }
+
+    func beginRemoteSession() async -> RemoteSession? { nil }
+    func endRemoteSession(_ session: RemoteSession?) async {}
+
+    func probe(_ host: Host, timeout: Duration, session: RemoteSession?) async -> ProbeReport {
+        await probe(host, timeout: timeout)
+    }
+
+    func probe(_ host: Host, timeout: Duration, retry: Bool, session: RemoteSession?) async -> ProbeReport {
+        await probe(host, timeout: timeout, retry: retry)
+    }
+
+    func devices(_ host: Host, timeout: Duration, session: RemoteSession?) async -> DevicesReport {
+        await devices(host, timeout: timeout)
+    }
+
+    func devices(_ host: Host, timeout: Duration, retry: Bool,
+                 session: RemoteSession?) async -> DevicesReport {
+        await devices(host, timeout: timeout, retry: retry)
+    }
+
+    func displays(_ host: Host, timeout: Duration, session: RemoteSession?) async -> DisplaysReport {
+        await displays(host, timeout: timeout)
+    }
+
+    func disconnect(_ host: Host, device: String, timeout: Duration,
+                    session: RemoteSession?) async -> CommandOutcome {
+        await disconnect(host, device: device, timeout: timeout)
+    }
+
+    func connect(_ host: Host, device: String, timeout: Duration,
+                 session: RemoteSession?) async -> CommandOutcome {
+        await connect(host, device: device, timeout: timeout)
+    }
+
+    func harden(_ host: Host, timeout: Duration, skipArrange: Bool,
+                session: RemoteSession?) async -> HardenOutcome {
+        await harden(host, timeout: timeout, skipArrange: skipArrange)
+    }
+
+    func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
+                     timeout: Duration, session: RemoteSession?) async -> BatchExecution {
+        await remoteBatch(kind, nonce: nonce, settle: settle, timeout: timeout)
     }
 }
 
@@ -130,6 +186,7 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
                                       retryAttempts: config.timings.remoteAttempts,
                                       retryBackoff: config.timings.retryBackoff,
                                       retryBudget: config.timings.remoteRetryBudget,
+                                      probeFloor: config.timings.remoteProbeTimeout,
                                       sleeper: sleeper,
                                       coordinator: retryCoordinator)
         self.bootstrap = RemoteBootstrap(transport: transport, binaryPath: config.remote.binaryPath,
@@ -146,11 +203,28 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
         coordinator.end(kind)
     }
 
+    public func beginRemoteSession() async -> RemoteSession? {
+        transport.beginSession()
+    }
+
+    public func endRemoteSession(_ session: RemoteSession?) async {
+        await transport.endSession(session)
+    }
+
     public func probe(_ host: Host, timeout: Duration) async -> ProbeReport {
         await probe(host, timeout: timeout, retry: true)
     }
 
     public func probe(_ host: Host, timeout: Duration, retry: Bool) async -> ProbeReport {
+        await probe(host, timeout: timeout, retry: retry, session: nil)
+    }
+
+    public func probe(_ host: Host, timeout: Duration, session: RemoteSession?) async -> ProbeReport {
+        await probe(host, timeout: timeout, retry: true, session: session)
+    }
+
+    public func probe(_ host: Host, timeout: Duration, retry: Bool,
+                      session: RemoteSession?) async -> ProbeReport {
         let result: CommandResult
         switch host {
         case .lavoro:
@@ -162,7 +236,9 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
             if retry { coordinator.begin(.probe, cap: config.timings.remoteRetryBudget) }
             result = await transport.execute(CommandBuilder.shellQuote(config.remote.connectedPath),
                                              timeout: timeout,
-                                             retryGroup: retry ? .probe : nil)
+                                             retryGroup: retry ? .probe : nil,
+                                             session: session,
+                                             allowFirstCallFallback: true)
             if retry { coordinator.end(.probe) }
         }
         return ExitCodes.probeReport(host: host, result: result)
@@ -173,6 +249,15 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
     }
 
     public func devices(_ host: Host, timeout: Duration, retry: Bool) async -> DevicesReport {
+        await devices(host, timeout: timeout, retry: retry, session: nil)
+    }
+
+    public func devices(_ host: Host, timeout: Duration, session: RemoteSession?) async -> DevicesReport {
+        await devices(host, timeout: timeout, retry: true, session: session)
+    }
+
+    public func devices(_ host: Host, timeout: Duration, retry: Bool,
+                        session: RemoteSession?) async -> DevicesReport {
         let result: CommandResult
         switch host {
         case .lavoro:
@@ -185,12 +270,19 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
                 return DevicesReport(status: .transport(reason), names: [], report: CommandReport(status: .transport(reason)))
             }
             let command = CommandBuilder.remoteCommand(remoteExecutable: config.remote.binaryPath, verb: "devices", device: nil)
-            result = await transport.execute(command, timeout: timeout, retryGroup: retry ? .prereqs : nil)
+            result = await transport.execute(command, timeout: timeout,
+                                             retryGroup: retry ? .prereqs : nil,
+                                             session: session,
+                                             allowFirstCallFallback: true)
         }
         return ExitCodes.devicesReport(host: host, result: result)
     }
 
     public func displays(_ host: Host, timeout: Duration) async -> DisplaysReport {
+        await displays(host, timeout: timeout, session: nil)
+    }
+
+    public func displays(_ host: Host, timeout: Duration, session: RemoteSession?) async -> DisplaysReport {
         let result: CommandResult
         switch host {
         case .lavoro:
@@ -200,12 +292,19 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
                 return DisplaysReport(status: .transport(reason), displays: [], report: CommandReport(status: .transport(reason)))
             }
             result = await transport.execute(CommandBuilder.shellQuote(config.remote.dispidPath),
-                                             timeout: timeout, retryGroup: .prereqs)
+                                             timeout: timeout, retryGroup: .prereqs,
+                                             session: session,
+                                             allowFirstCallFallback: true)
         }
         return ExitCodes.displaysReport(host: host, result: result)
     }
 
     public func disconnect(_ host: Host, device: String, timeout: Duration) async -> CommandOutcome {
+        await disconnect(host, device: device, timeout: timeout, session: nil)
+    }
+
+    public func disconnect(_ host: Host, device: String, timeout: Duration,
+                           session: RemoteSession?) async -> CommandOutcome {
         logging.log(.info, "disconnect \(host.rawValue) device=\(device)")
         let result: CommandResult
         switch host {
@@ -220,13 +319,19 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
             }
             let command = CommandBuilder.remoteCommand(remoteExecutable: config.remote.binaryPath,
                                                        verb: "disconnect", device: device)
-            result = await transport.execute(command, timeout: timeout)
+            result = await transport.execute(command, timeout: timeout, session: session,
+                                             allowFirstCallFallback: false)
         }
         logFailure("disconnect", host: host, result: result)
         return ExitCodes.commandOutcome(host: host, result: result)
     }
 
     public func connect(_ host: Host, device: String, timeout: Duration) async -> CommandOutcome {
+        await connect(host, device: device, timeout: timeout, session: nil)
+    }
+
+    public func connect(_ host: Host, device: String, timeout: Duration,
+                        session: RemoteSession?) async -> CommandOutcome {
         logging.log(.info, "connect \(host.rawValue) device=\(device)")
         let result: CommandResult
         switch host {
@@ -241,7 +346,8 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
             }
             let command = CommandBuilder.remoteCommand(remoteExecutable: config.remote.binaryPath,
                                                        verb: "connect", device: device)
-            result = await transport.execute(command, timeout: timeout)
+            result = await transport.execute(command, timeout: timeout, session: session,
+                                             allowFirstCallFallback: false)
         }
         logFailure("connect", host: host, result: result)
         return ExitCodes.commandOutcome(host: host, result: result)
@@ -249,6 +355,11 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
 
     public func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
                             timeout: Duration) async -> BatchExecution {
+        await remoteBatch(kind, nonce: nonce, settle: settle, timeout: timeout, session: nil)
+    }
+
+    public func remoteBatch(_ kind: RemoteBatchKind, nonce: String, settle: Duration,
+                            timeout: Duration, session: RemoteSession?) async -> BatchExecution {
         if let reason = await bootstrap.ensureReady() {
             return .transport(reason)
         }
@@ -270,7 +381,8 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
         if kind == .verify {
             coordinator.begin(.probe, cap: config.timings.remoteRetryBudget)
         }
-        let result = await transport.execute(command, timeout: timeout, retryGroup: group)
+        let result = await transport.execute(command, timeout: timeout, retryGroup: group,
+                                             session: session, allowFirstCallFallback: true)
         if kind == .verify {
             coordinator.end(.probe)
         }
@@ -300,6 +412,11 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
     }
 
     public func harden(_ host: Host, timeout: Duration, skipArrange: Bool) async -> HardenOutcome {
+        await harden(host, timeout: timeout, skipArrange: skipArrange, session: nil)
+    }
+
+    public func harden(_ host: Host, timeout: Duration, skipArrange: Bool,
+                       session: RemoteSession?) async -> HardenOutcome {
         if host == .lavoro {
             logging.log(.info, "harden Lavoro: no-op")
             return .ok
@@ -310,7 +427,8 @@ public final class SystemOperations: SidecarOperations, @unchecked Sendable {
         }
         guard let reason = await bootstrap.ensureReady() else {
             let command = CommandBuilder.shellQuote(config.remote.arrangePath)
-            let result = await transport.execute(command, timeout: timeout)
+            let result = await transport.execute(command, timeout: timeout, session: session,
+                                                 allowFirstCallFallback: false)
             let status = ExitCodes.ssh(result)
             let outcome = ExitCodes.harden(status: status, stderr: result.stderr)
             logging.log(outcome == .ok ? .info : .warning, "harden \(host.rawValue): \(outcome)")

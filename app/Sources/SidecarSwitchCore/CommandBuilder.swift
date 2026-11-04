@@ -268,7 +268,10 @@ public enum CommandBuilder {
         command: String,
         firstConnect: Bool,
         home: URL = SystemHome().homeDirectory,
-        sshConfigPath: String? = nil
+        sshConfigPath: String? = nil,
+        controlPath: String? = nil,
+        controlPersist: Int? = nil,
+        logging: any SwitchLogging = NoopLogging()
     ) throws -> [String] {
         try validate(remote, home: home)
         guard !remote.host.isEmpty else { throw CommandBuilderError.emptyHost }
@@ -301,6 +304,19 @@ public enum CommandBuilder {
         if remote.port != 22 {
             args.append(contentsOf: ["-p", "\(remote.port)"])
         }
+        if controlPath != nil || controlPersist != nil {
+            if let controlPath, let controlPersist,
+               ControlSocket.pathLengthValid(controlPath),
+               !ControlSocket.pathContainsPercent(controlPath) {
+                args.append(contentsOf: [
+                    "-o", "ControlMaster=auto",
+                    "-o", "ControlPath=\(controlPath)",
+                    "-o", "ControlPersist=\(controlPersist)"
+                ])
+            } else {
+                logging.log(.warning, "ControlSocket omesso: path \(controlPath ?? "nil") (\(controlPath?.utf8.count ?? 0) byte, percent=\(controlPath.map(ControlSocket.pathContainsPercent) ?? false))")
+            }
+        }
         let target = remote.user.isEmpty ? remote.host : "\(remote.user)@\(remote.host)"
         args.append(target)
         args.append(command)
@@ -315,13 +331,45 @@ public enum CommandBuilder {
         firstConnect: Bool,
         home: URL = SystemHome().homeDirectory,
         sshConfigPath: String? = nil,
-        executable: String = CommandBuilder.sshExecutable
+        executable: String = CommandBuilder.sshExecutable,
+        controlPath: String? = nil,
+        controlPersist: Int? = nil,
+        logging: any SwitchLogging = NoopLogging()
     ) throws -> CommandSpec {
         var argv = try sshArguments(remote: remote, ssh: ssh, knownHostsPath: knownHostsPath,
                                     command: command, firstConnect: firstConnect,
-                                    home: home, sshConfigPath: sshConfigPath)
+                                    home: home, sshConfigPath: sshConfigPath,
+                                    controlPath: controlPath, controlPersist: controlPersist,
+                                    logging: logging)
         argv[0] = executable
         return CommandSpec(executable: argv[0], arguments: Array(argv.dropFirst()))
+    }
+
+    public static func sshControlArguments(
+        remote: RemoteSettings,
+        controlPath: String,
+        verb: String,
+        executable: String,
+        environment: [String: String],
+        home: URL = SystemHome().homeDirectory,
+        sshConfigPath: String? = nil
+    ) throws -> [String] {
+        _ = environment
+        try validate(remote, home: home)
+        guard !remote.host.isEmpty else { throw CommandBuilderError.emptyHost }
+        guard ControlSocket.pathLengthValid(controlPath),
+              !ControlSocket.pathContainsPercent(controlPath) else {
+            throw CommandBuilderError.invalidPath(controlPath)
+        }
+        var args: [String] = [executable]
+        if let sshConfigPath, !sshConfigPath.isEmpty {
+            try validateAbsolutePath(sshConfigPath)
+            args.append(contentsOf: ["-F", sshConfigPath])
+        }
+        args.append(contentsOf: ["-o", "ControlPath=\(controlPath)", "-O", verb])
+        let target = remote.user.isEmpty ? remote.host : "\(remote.user)@\(remote.host)"
+        args.append(target)
+        return args
     }
 
     public static func sshQueryArguments(

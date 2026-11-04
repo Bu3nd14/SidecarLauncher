@@ -30,6 +30,10 @@ public struct AppPaths: Sendable, Equatable {
         home.appendingPathComponent(".sidecar-switch", isDirectory: true)
     }
 
+    public var runDirectory: URL {
+        home.appendingPathComponent(".sidecar-switch/run", isDirectory: true)
+    }
+
     public var knownHostsPath: String {
         knownHostsDirectory.appendingPathComponent("known_hosts").path
     }

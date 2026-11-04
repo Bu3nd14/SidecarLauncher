@@ -9,8 +9,8 @@ BUILD_DIR="${SIDECAR_SWITCH_OUTPUT:-$APP_DIR/build}"
 BUNDLE_NAME="SidecarSwitch.app"
 BUNDLE="$BUILD_DIR/$BUNDLE_NAME"
 TOOLS=(SidecarLauncher connected dispid mirror arrange)
-BUNDLE_SHORT_VERSION="0.2.0"
-BUNDLE_VERSION="3"
+BUNDLE_SHORT_VERSION="0.3.0"
+BUNDLE_VERSION="4"
 
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
 
@@ -64,6 +64,7 @@ trap 'rm -rf "$STAGING" "$OLD"' EXIT
 
 cp "$EXECUTABLE" "$STAGING/Contents/MacOS/SidecarSwitch"
 chmod 0755 "$STAGING/Contents/MacOS/SidecarSwitch"
+strip -x "$STAGING/Contents/MacOS/SidecarSwitch"
 
 for tool in "${TOOLS[@]}"; do
   cp "$TOOLS_BIN/$tool" "$STAGING/Contents/Resources/$tool"
