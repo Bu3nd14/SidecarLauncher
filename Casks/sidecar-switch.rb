@@ -8,7 +8,7 @@ cask "sidecar-switch" do
   homepage "https://github.com/Bu3nd14/SidecarLauncher"
 
   depends_on arch: :arm64
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "SidecarSwitch.app"
 
