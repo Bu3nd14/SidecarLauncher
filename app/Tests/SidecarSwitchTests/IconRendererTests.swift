@@ -58,8 +58,8 @@ final class IconRendererTests: XCTestCase {
 
     func testK95LetterBevelIsVisibleAt256() {
         let cases: [(Holder, ClosedRange<Int>, ClosedRange<Int>)] = [
-            (.lavoro, 65...109, 112...124),
-            (.personale, 151...185, 188...200)
+            (.lavoro, 60...115, 120...132),
+            (.personale, 148...190, 195...207)
         ]
         for (holder, letterRange, backgroundRange) in cases {
             let request = renderRequest(.rest(holder: holder), size: size)
@@ -88,26 +88,37 @@ final class IconRendererTests: XCTestCase {
               let lavoroBounds = bounds(of: lavoroMask) else {
             return XCTFail("maschera lettera lavoro non misurabile")
         }
-        guard let personaleMask = letterMask(renderRequest(.rest(holder: .personale), size: size)) else {
+        guard let personaleMask = letterMask(renderRequest(.rest(holder: .personale), size: size)),
+              let personaleBounds = bounds(of: personaleMask) else {
             return XCTFail("maschera lettera personale non misurabile")
         }
 
         let row = Int((IconGeometry.pillMidY + IconGeometry.letterHeight * 0.25).rounded())
-        let stemX = Int((exposedSampleX(for: .personale) - IconGeometry.letterWidth * 0.35).rounded())
+        let stemX = Int((exposedSampleX(for: .personale) - IconGeometry.letterWidthP * 0.35).rounded())
         guard let stroke = runWidth(in: personaleMask, y: row, startingAt: stemX) else {
             return XCTFail("tratto del gambo di p non misurabile")
         }
 
         let bevelOffset = IconRenderer.masterSize / CGFloat(size)
         let measuredHeight = Double(lavoroBounds.height) - Double(stroke) - Double(bevelOffset)
-        let measuredWidth = Double(lavoroBounds.width) - Double(stroke)
+        let measuredWidthW = (Double(lavoroBounds.width) - Double(stroke)) / IconGeometry.wPathSpanRatio
+        let measuredWidthP = (Double(personaleBounds.width) - Double(stroke)) / IconGeometry.pPathSpanRatio
 
         XCTAssertEqual(measuredHeight, IconGeometry.pillHeight * 0.48, accuracy: 2,
                        "altezza lettera ≈ 0.48 della pillola")
-        XCTAssertEqual(measuredWidth, measuredHeight * 0.82, accuracy: 2,
-                       "larghezza lettera ≈ 0.82 dell'altezza")
-        XCTAssertEqual(Double(stroke), measuredHeight * 0.21, accuracy: 2,
-                       "tratto lettera ≈ 0.21 dell'altezza")
+        XCTAssertEqual(measuredWidthW, 168, accuracy: 3,
+                       "larghezza W ≈ 1.08 dell'altezza")
+        XCTAssertEqual(measuredWidthP, 134, accuracy: 3,
+                       "larghezza P ≈ 0.86 dell'altezza")
+        XCTAssertEqual(Double(stroke), 40.6, accuracy: 2,
+                       "tratto lettera ≈ 0.26 dell'altezza")
+
+        let wGap = minimumGap(in: lavoroMask, y: Int(IconGeometry.pillMidY.rounded()))
+        XCTAssertNotNil(wGap, "diagonali di W fuse a metà altezza")
+        if let wGap {
+            XCTAssertGreaterThanOrEqual(wGap, 2,
+                                        "gap tra le diagonali di W ≥ 2 px a 1024")
+        }
     }
 
     func testK96PulseInterpolatesBothStopsAndKeepsKnobFixed() {
@@ -276,6 +287,30 @@ final class IconRendererTests: XCTestCase {
         while left > 0 && mask.contains(x: left - 1, y: y) { left -= 1 }
         while right < mask.width - 1 && mask.contains(x: right + 1, y: y) { right += 1 }
         return right - left + 1
+    }
+
+    private func minimumGap(in mask: LetterMask, y: Int) -> Int? {
+        guard y >= 0 && y < mask.height else { return nil }
+        var gaps: [Int] = []
+        var inRun = false
+        var seenRun = false
+        var gap = 0
+        for x in 0..<mask.width {
+            if mask.contains(x: x, y: y) {
+                if !inRun {
+                    if seenRun && gap > 0 { gaps.append(gap) }
+                    gap = 0
+                    inRun = true
+                    seenRun = true
+                }
+            } else if inRun {
+                inRun = false
+                gap = 1
+            } else if seenRun {
+                gap += 1
+            }
+        }
+        return gaps.min()
     }
 
     private static func minimumDeltaE(busyTop: IconColor,

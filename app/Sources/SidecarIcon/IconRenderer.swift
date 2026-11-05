@@ -143,7 +143,8 @@ public enum IconRenderer {
                                    in context: CGContext,
                                    space: CGColorSpace) {
         let letterHeight = heightFactor * 0.48
-        let letterWidth = letterHeight * 0.82
+        let widthFactor: CGFloat = letter == .w ? 1.08 : 0.86
+        let letterWidth = letterHeight * widthFactor
         let centerX: CGFloat
         let holder: Holder?
         switch letter {
@@ -157,7 +158,7 @@ public enum IconRenderer {
         let center = CGPoint(x: centerX, y: pill.midY)
         let path = letterPath(letter, center: center, width: letterWidth, height: letterHeight)
         let base = DockIconPalette.exposedTop(for: holder)
-        context.setLineWidth(letterHeight * 0.21)
+        context.setLineWidth(letterHeight * 0.26)
         context.setLineCap(.round)
         context.setLineJoin(.round)
         context.setStrokeColor(color(base.scaled(1.30), space: space))

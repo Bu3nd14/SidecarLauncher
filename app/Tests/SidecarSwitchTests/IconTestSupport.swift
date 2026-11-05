@@ -16,8 +16,11 @@ enum IconGeometry {
     static let knobDiameter: Double = pillHeight * 0.84
     static let knobRadius: Double = knobDiameter / 2
     static let letterHeight: Double = pillHeight * 0.48
-    static let letterWidth: Double = letterHeight * 0.82
-    static let letterStroke: Double = letterHeight * 0.21
+    static let letterWidthW: Double = letterHeight * 1.08
+    static let letterWidthP: Double = letterHeight * 0.86
+    static let letterStroke: Double = letterHeight * 0.26
+    static let wPathSpanRatio: Double = 1.0
+    static let pPathSpanRatio: Double = 0.7
 
     static func knobCenterX(position: Double) -> Double {
         pillMinX + knobRadius + position * (pillWidth - 2 * knobRadius)
