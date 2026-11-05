@@ -1,72 +1,97 @@
 import AppKit
 import XCTest
+@testable import SidecarIcon
 @testable import SidecarSwitch
 @testable import SidecarSwitchCore
 
-final class DockIconPlannerTests: XCTestCase {
-    func testK66PlannerMatrix() {
-        XCTAssertEqual(DockIconPlanner.plan(isTransitioning: true, switchingAssetAvailable: true), .switching)
-        XCTAssertEqual(DockIconPlanner.plan(isTransitioning: false, switchingAssetAvailable: true), .normal)
-        XCTAssertEqual(DockIconPlanner.plan(isTransitioning: true, switchingAssetAvailable: false), .normal)
-        XCTAssertEqual(DockIconPlanner.plan(isTransitioning: false, switchingAssetAvailable: false), .normal)
+final class DockIconPaletteTests: XCTestCase {
+    func testK66PaletteAndRestFrameMatrix() {
+        XCTAssertEqual(DockIconPalette.knobPosition(for: .lavoro), 1)
+        XCTAssertEqual(DockIconPalette.knobPosition(for: .personale), 0)
+        XCTAssertEqual(DockIconPalette.knobPosition(for: nil), 0.5)
+        XCTAssertEqual(DockIconPalette.letter(for: .lavoro), .w)
+        XCTAssertEqual(DockIconPalette.letter(for: .personale), .p)
+        XCTAssertNil(DockIconPalette.letter(for: nil))
+
+        let lavoro = DockIconStateMachine.frame(phase: .rest(holder: .lavoro), elapsed: .zero, size: 256)
+        XCTAssertEqual(lavoro.request.exposedTop, DockIconPalette.lavoroTop)
+        XCTAssertEqual(lavoro.request.exposedBottom, DockIconPalette.lavoroBottom)
+        XCTAssertEqual(lavoro.request.knobPosition, 1)
+        XCTAssertEqual(lavoro.request.knobRing, .normal)
+        XCTAssertEqual(lavoro.request.letter, .w)
+
+        let personale = DockIconStateMachine.frame(phase: .rest(holder: .personale), elapsed: .zero, size: 256)
+        XCTAssertEqual(personale.request.exposedTop, DockIconPalette.personaleTop)
+        XCTAssertEqual(personale.request.knobPosition, 0)
+        XCTAssertEqual(personale.request.letter, .p)
+
+        let neutral = DockIconStateMachine.frame(phase: .rest(holder: nil), elapsed: .zero, size: 256)
+        XCTAssertEqual(neutral.request.exposedTop, DockIconPalette.neutralTop)
+        XCTAssertEqual(neutral.request.knobPosition, 0.5)
+        XCTAssertNil(neutral.request.letter)
+    }
+}
+
+final class DockIconAssetTests: XCTestCase {
+    func testK67NeutralAssetRendersEveryIconsetSize() {
+        for size in [16, 32, 64, 128, 256, 512, 1024] {
+            let request = DockIconStateMachine.frame(phase: .rest(holder: nil),
+                                                     elapsed: .zero,
+                                                     size: size).request
+            guard let image = IconRenderer.renderCGImage(request) else {
+                XCTFail("render neutro \(size) fallita")
+                continue
+            }
+            XCTAssertEqual(image.width, size)
+            XCTAssertEqual(image.height, size)
+        }
+        let sixteen = DockIconStateMachine.frame(phase: .rest(holder: nil), elapsed: .zero, size: 16).request
+        let sixteenWithLetter = IconRenderRequest(knobPosition: sixteen.knobPosition,
+                                                  exposedTop: sixteen.exposedTop,
+                                                  exposedBottom: sixteen.exposedBottom,
+                                                  knobRing: sixteen.knobRing,
+                                                  letter: .w,
+                                                  size: 16)
+        guard let first = IconRenderer.renderCGImage(sixteen),
+              let second = IconRenderer.renderCGImage(sixteenWithLetter),
+              let firstBuffer = PixelBuffer(first),
+              let secondBuffer = PixelBuffer(second) else {
+            return XCTFail("render 16 fallita")
+        }
+        XCTAssertEqual(firstBuffer.maxChannelDifference(secondBuffer), 0)
     }
 }
 
 @MainActor
-final class DockIconControllerTests: XCTestCase {
-    func testK68ControllerAppliesSwitchingThenNormalAndFallsBack() {
-        let normal = NSImage(size: NSSize(width: 16, height: 16))
-        let switching = NSImage(size: NSSize(width: 16, height: 16))
+final class DockIconControllerK68Tests: XCTestCase {
+    func testK68ControllerAppliesRestPulseAndRest() {
+        let scheduler = ManualDockIconScheduler()
+        let clock = Duration.zero
         var applied: [NSImage] = []
-        let controller = DockIconController(normalImage: normal, switchingImage: switching) { image in
-            if let image { applied.append(image) }
-        }
+        let controller = DockIconController(dependencies: .init(
+            scheduler: scheduler,
+            now: { clock },
+            reduceMotion: { false },
+            applyImage: { applied.append($0) },
+            render: { IconRenderer.renderCGImage($0) }
+        ))
 
-        controller.apply(isTransitioning: true)
-        XCTAssertTrue(applied.last === switching)
-        controller.apply(isTransitioning: false)
-        XCTAssertTrue(applied.last === normal)
+        controller.showRest(holder: .lavoro)
+        XCTAssertEqual(applied.count, 1)
+        XCTAssertEqual(scheduler.intervals.count, 0)
 
-        var fallbackApplied: [NSImage] = []
-        let fallback = DockIconController(normalImage: normal, switchingImage: nil) { image in
-            if let image { fallbackApplied.append(image) }
-        }
-        fallback.apply(isTransitioning: true)
-        XCTAssertTrue(fallbackApplied.last === normal)
-    }
+        controller.beginTransition(from: .lavoro)
+        XCTAssertEqual(scheduler.intervals.count, 1)
+        XCTAssertEqual(applied.count, 2)
 
-    func testK68AppModelHookSwitchesAndResets() async throws {
-        let home = try makeTempDirectory("dock-icon-model")
-        defer { try? FileManager.default.removeItem(at: home) }
-        let ops = RecordingOperations()
-        ops.setProbes(.lavoro, [Fixtures.disconnected(), Fixtures.disconnected(), Fixtures.disconnected()])
-        ops.setDisplays(.lavoro, [Fixtures.displaysOK([Fixtures.builtin])])
-        let normal = NSImage(size: NSSize(width: 16, height: 16))
-        let switching = NSImage(size: NSSize(width: 16, height: 16))
-        var applied: [NSImage] = []
-        let controller = DockIconController(normalImage: normal, switchingImage: switching) { image in
-            if let image { applied.append(image) }
-        }
-        let model = AppModel(paths: AppPaths(home: home),
-                             logURL: home.appendingPathComponent("log.txt"),
-                             resourcesDirectory: nil,
-                             bundledToolsVersion: "test",
-                             operationsFactory: { _ in ops },
-                             timings: .fast,
-                             dockIconController: controller)
-
-        model.handle(TransitionOutcome(state: .done(.lavoro), persistence: .success(.lavoro), actual: .lavoro))
-        XCTAssertTrue(applied.last === normal)
-
-        model.toggle(.lavoro)
-        XCTAssertTrue(applied.last === switching)
-
-        var spins = 0
-        while model.isTransitioning && spins < 20000 {
-            spins += 1
-            await Task.yield()
-        }
-        XCTAssertFalse(model.isTransitioning)
-        XCTAssertTrue(applied.last === normal)
+        controller.finishTransition(TransitionOutcome(state: .failed(nil, .targetFailed),
+                                                      persistence: .unchanged,
+                                                      actual: nil),
+                                    current: .lavoro,
+                                    needsReconcile: false)
+        XCTAssertTrue(scheduler.handles[0].invalidated)
+        XCTAssertEqual(applied.count, 3)
+        XCTAssertEqual(scheduler.intervals.count, 1)
+        controller.invalidate()
     }
 }

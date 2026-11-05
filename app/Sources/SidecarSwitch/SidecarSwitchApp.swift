@@ -1,6 +1,22 @@
 import AppKit
+import SidecarIcon
 import SidecarSwitchCore
 import SwiftUI
+
+@MainActor
+enum LiveDockIcon {
+    static func makeController() -> DockIconController {
+        let clock = ContinuousClock()
+        let origin = clock.now
+        return DockIconController(dependencies: .init(
+            scheduler: TimerDockIconScheduler(),
+            now: { clock.now - origin },
+            reduceMotion: { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
+            applyImage: { NSApplication.shared.applicationIconImage = $0 },
+            render: { IconRenderer.renderCGImage($0) }
+        ))
+    }
+}
 
 @main
 struct SidecarSwitchApp: App {
@@ -54,9 +70,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
         if model.dockIconController == nil {
-            model.dockIconController = DockIconController()
+            model.dockIconController = LiveDockIcon.makeController()
         }
-        model.dockIconController?.apply(isTransitioning: false)
+        model.dockIconController?.showRest(holder: nil)
         Task { await model.start() }
     }
 
@@ -83,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        model.dockIconController?.invalidate()
         singleInstance?.release()
     }
 

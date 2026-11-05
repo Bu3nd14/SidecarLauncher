@@ -9,8 +9,8 @@ BUILD_DIR="${SIDECAR_SWITCH_OUTPUT:-$APP_DIR/build}"
 BUNDLE_NAME="SidecarSwitch.app"
 BUNDLE="$BUILD_DIR/$BUNDLE_NAME"
 TOOLS=(SidecarLauncher connected dispid mirror arrange)
-BUNDLE_SHORT_VERSION="0.3.0"
-BUNDLE_VERSION="4"
+BUNDLE_SHORT_VERSION="0.4.0"
+BUNDLE_VERSION="5"
 
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
 
@@ -45,15 +45,14 @@ printf '\n[2/6] swift build -c release\n'
 swift build -c release --package-path "$APP_DIR"
 BIN_PATH="$(swift build -c release --package-path "$APP_DIR" --show-bin-path)"
 EXECUTABLE="$BIN_PATH/SidecarSwitch"
+ICONGEN="$BIN_PATH/IconGen"
 [ -x "$EXECUTABLE" ] || die "eseguibile non prodotto: $EXECUTABLE"
+[ -x "$ICONGEN" ] || die "IconGen non prodotto: $ICONGEN"
 
-printf '\n[3/6] icona programma\n'
+printf '\n[3/6] icona programma (una sola .icns neutra)\n'
 ICON_PATH="$BUILD_DIR/AppIcon.icns"
-ICON_SWITCH_PATH="$BUILD_DIR/AppIconSwitch.icns"
-SIDECAR_ICON_WORKDIR="$BUILD_DIR" swift "$APP_DIR/make-icon.swift" "$ICON_PATH"
-SIDECAR_ICON_WORKDIR="$BUILD_DIR" swift "$APP_DIR/make-icon.swift" "$ICON_SWITCH_PATH" switching
+SIDECAR_ICON_WORKDIR="$BUILD_DIR" "$ICONGEN" "$ICON_PATH"
 [ -s "$ICON_PATH" ] || die "icona non generata: $ICON_PATH"
-[ -s "$ICON_SWITCH_PATH" ] || die "icona switching non generata: $ICON_SWITCH_PATH"
 
 printf '\n[4/6] assemblaggio bundle atomico\n'
 STAGING="$BUILD_DIR/.$BUNDLE_NAME.staging.$$"
@@ -72,9 +71,7 @@ for tool in "${TOOLS[@]}"; do
 done
 
 cp "$ICON_PATH" "$STAGING/Contents/Resources/AppIcon.icns"
-cp "$ICON_SWITCH_PATH" "$STAGING/Contents/Resources/AppIconSwitch.icns"
 chmod 0644 "$STAGING/Contents/Resources/AppIcon.icns"
-chmod 0644 "$STAGING/Contents/Resources/AppIconSwitch.icns"
 if [ -f "$REPO_DIR/LICENSE" ]; then
   cp "$REPO_DIR/LICENSE" "$STAGING/Contents/Resources/LICENSE"
   chmod 0644 "$STAGING/Contents/Resources/LICENSE"

@@ -91,6 +91,7 @@ final class AppModel: ObservableObject {
     func start() async {
         bootstrapTools()
         await refreshActual(showBannerOnChange: true)
+        dockIconController?.showRest(holder: actual.holder)
         installHotkey()
         logger.log(.info, "stato iniziale actual=\(actual.rawValue) needsReconcile=\(needsReconcile)")
     }
@@ -150,8 +151,9 @@ final class AppModel: ObservableObject {
             }
         )
 
+        let from = actual.holder
         isTransitioning = true
-        dockIconController?.apply(isTransitioning: true)
+        dockIconController?.beginTransition(from: from)
         banner = nil
         logger.log(.info, "[\(identifier.uuidString.prefix(8))] toggle UI -> \(target.rawValue)")
         let gateDisabled = personaleGateDisabled
@@ -180,8 +182,9 @@ final class AppModel: ObservableObject {
             deviceName: snapshot.device.name,
             logging: logger
         )
+        let from = actual.holder
         isTransitioning = true
-        dockIconController?.apply(isTransitioning: true)
+        dockIconController?.beginTransition(from: from)
         banner = nil
         let gateDisabled = personaleGateDisabled
         Task {
@@ -204,8 +207,9 @@ final class AppModel: ObservableObject {
             deviceName: snapshot.device.name,
             logging: logger
         )
+        let from = actual.holder
         isTransitioning = true
-        dockIconController?.apply(isTransitioning: true)
+        dockIconController?.beginTransition(from: from)
         banner = nil
         Task {
             let outcome = await gate.run(transitionID: identifier) { token in
@@ -330,11 +334,15 @@ final class AppModel: ObservableObject {
 
     func handle(_ outcome: TransitionOutcome?) {
         isTransitioning = false
-        dockIconController?.apply(isTransitioning: false)
-        guard let outcome else { return }
+        guard let outcome else {
+            dockIconController?.showRest(holder: actual.holder)
+            return
+        }
+        let current = actual
         phase = outcome.state
-        actual = OutcomeStateReducer.actual(after: outcome, current: actual)
+        actual = OutcomeStateReducer.actual(after: outcome, current: current)
         apply(outcome.persistence)
+        dockIconController?.finishTransition(outcome, current: current, needsReconcile: needsReconcile)
         if let message = outcome.message {
             banner = Banner(kind: bannerKind(for: outcome.state), message: message)
         } else if case .failed(_, let reason) = outcome.state {
@@ -392,6 +400,9 @@ final class AppModel: ObservableObject {
         actual = plan.actual
         needsReconcile = plan.needsReconcile
         apply(plan.persistence)
+        if !isTransitioning {
+            dockIconController?.showRest(holder: actual.holder)
+        }
         if showBannerOnChange {
             if personaleGateDisabled {
                 banner = Banner(kind: .warning, message: "Configura config.json")
