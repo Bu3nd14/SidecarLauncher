@@ -81,10 +81,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            sender.windows.first?.makeKeyAndOrderFront(nil)
+        let window = sender.windows.first(where: { $0.canBecomeMain })
+        switch ReopenDecision.plan(hasVisibleWindows: flag, hasMainCapableWindow: window != nil) {
+        case .noop:
+            return true
+        case .showExisting:
+            if let window, window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window?.makeKeyAndOrderFront(nil)
+            return true
+        case .systemDefault:
+            return false
         }
-        return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

@@ -149,6 +149,19 @@ public enum StartupPlanner {
     }
 }
 
+public enum ReopenAction: Sendable, Equatable {
+    case noop
+    case showExisting
+    case systemDefault
+}
+
+public enum ReopenDecision {
+    public static func plan(hasVisibleWindows: Bool, hasMainCapableWindow: Bool) -> ReopenAction {
+        if hasVisibleWindows { return .noop }
+        return hasMainCapableWindow ? .showExisting : .systemDefault
+    }
+}
+
 public struct DockMenuState: Sendable, Equatable {
     public var lavoroEnabled: Bool
     public var personaleEnabled: Bool
