@@ -58,8 +58,8 @@ final class IconRendererTests: XCTestCase {
 
     func testK95LetterBevelIsVisibleAt256() {
         let cases: [(Holder, ClosedRange<Int>, ClosedRange<Int>)] = [
-            (.lavoro, 60...115, 120...132),
-            (.personale, 148...190, 195...207)
+            (.lavoro, 63...118, 120...132),
+            (.personale, 147...184, 195...207)
         ]
         for (holder, letterRange, backgroundRange) in cases {
             let request = renderRequest(.rest(holder: holder), size: size)
@@ -94,7 +94,7 @@ final class IconRendererTests: XCTestCase {
         }
 
         let row = Int((IconGeometry.pillMidY + IconGeometry.letterHeight * 0.25).rounded())
-        let stemX = Int((exposedSampleX(for: .personale) - IconGeometry.letterWidthP * 0.35).rounded())
+        let stemX = Int((IconGeometry.letterCenterX(for: .personale) - IconGeometry.letterWidthP * 0.35).rounded())
         guard let stroke = runWidth(in: personaleMask, y: row, startingAt: stemX) else {
             return XCTFail("tratto del gambo di p non misurabile")
         }
@@ -104,6 +104,10 @@ final class IconRendererTests: XCTestCase {
         let measuredWidthW = (Double(lavoroBounds.width) - Double(stroke)) / IconGeometry.wPathSpanRatio
         let measuredWidthP = (Double(personaleBounds.width) - Double(stroke)) / IconGeometry.pPathSpanRatio
 
+        XCTAssertEqual(lavoroBounds.centerX, 362, accuracy: 1,
+                       "centro lettera W ≈ 0.27 della pillola")
+        XCTAssertEqual(personaleBounds.centerX, 661, accuracy: 1,
+                       "centro lettera P ≈ 0.73 della pillola")
         XCTAssertEqual(measuredHeight, IconGeometry.pillHeight * 0.48, accuracy: 2,
                        "altezza lettera ≈ 0.48 della pillola")
         XCTAssertEqual(measuredWidthW, 168, accuracy: 3,
@@ -263,7 +267,7 @@ final class IconRendererTests: XCTestCase {
         return LetterMask(width: filled.width, height: filled.height, bits: bits)
     }
 
-    private func bounds(of mask: LetterMask) -> (width: Int, height: Int)? {
+    private func bounds(of mask: LetterMask) -> (width: Int, height: Int, centerX: Double)? {
         var minX = Int.max
         var maxX = Int.min
         var minY = Int.max
@@ -277,7 +281,7 @@ final class IconRendererTests: XCTestCase {
             }
         }
         guard minX <= maxX, minY <= maxY else { return nil }
-        return (maxX - minX + 1, maxY - minY + 1)
+        return (maxX - minX + 1, maxY - minY + 1, Double(minX + maxX) / 2)
     }
 
     private func runWidth(in mask: LetterMask, y: Int, startingAt x: Int) -> Int? {

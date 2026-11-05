@@ -26,6 +26,13 @@ enum IconGeometry {
         pillMinX + knobRadius + position * (pillWidth - 2 * knobRadius)
     }
 
+    static func letterCenterX(for holder: Holder?) -> Double {
+        switch holder {
+        case .personale?: return pillMinX + pillWidth * 0.73
+        default: return pillMinX + pillWidth * 0.27
+        }
+    }
+
     static func scale(_ size: Int) -> Double {
         Double(size) / master
     }

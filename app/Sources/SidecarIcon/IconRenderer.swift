@@ -149,10 +149,10 @@ public enum IconRenderer {
         let holder: Holder?
         switch letter {
         case .w:
-            centerX = pill.minX + pill.width * 0.25
+            centerX = pill.minX + pill.width * 0.27
             holder = .lavoro
         case .p:
-            centerX = pill.minX + pill.width * 0.75
+            centerX = pill.minX + pill.width * 0.73
             holder = .personale
         }
         let center = CGPoint(x: centerX, y: pill.midY)
