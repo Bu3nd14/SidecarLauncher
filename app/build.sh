@@ -9,8 +9,8 @@ BUILD_DIR="${SIDECAR_SWITCH_OUTPUT:-$APP_DIR/build}"
 BUNDLE_NAME="SidecarSwitch.app"
 BUNDLE="$BUILD_DIR/$BUNDLE_NAME"
 TOOLS=(SidecarLauncher connected dispid mirror arrange)
-BUNDLE_SHORT_VERSION="0.4.1"
-BUNDLE_VERSION="6"
+BUNDLE_SHORT_VERSION="0.4.2"
+BUNDLE_VERSION="7"
 
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
 

@@ -58,8 +58,8 @@ final class IconRendererTests: XCTestCase {
 
     func testK95LetterBevelIsVisibleAt256() {
         let cases: [(Holder, ClosedRange<Int>, ClosedRange<Int>)] = [
-            (.lavoro, 63...112, 114...124),
-            (.personale, 146...190, 192...205)
+            (.lavoro, 65...109, 112...124),
+            (.personale, 151...185, 188...200)
         ]
         for (holder, letterRange, backgroundRange) in cases {
             let request = renderRequest(.rest(holder: holder), size: size)
@@ -69,7 +69,7 @@ final class IconRendererTests: XCTestCase {
             }
             var letterMaximum = 0.0
             var backgroundMaximum = 0.0
-            for y in 96..<112 {
+            for y in 100..<112 {
                 for x in letterRange {
                     letterMaximum = max(letterMaximum, buffer.pixel(x: x, yFromBottom: y).g)
                 }
@@ -80,6 +80,34 @@ final class IconRendererTests: XCTestCase {
             XCTAssertGreaterThan(letterMaximum, backgroundMaximum + 0.1,
                                  "bevel chiaro non visibile sul bordo della lettera \(holder)")
         }
+    }
+
+    func testK106LetterProportionsAt1024() {
+        let size = 1024
+        guard let lavoroMask = letterMask(renderRequest(.rest(holder: .lavoro), size: size)),
+              let lavoroBounds = bounds(of: lavoroMask) else {
+            return XCTFail("maschera lettera lavoro non misurabile")
+        }
+        guard let personaleMask = letterMask(renderRequest(.rest(holder: .personale), size: size)) else {
+            return XCTFail("maschera lettera personale non misurabile")
+        }
+
+        let row = Int((IconGeometry.pillMidY + IconGeometry.letterHeight * 0.25).rounded())
+        let stemX = Int((exposedSampleX(for: .personale) - IconGeometry.letterWidth * 0.35).rounded())
+        guard let stroke = runWidth(in: personaleMask, y: row, startingAt: stemX) else {
+            return XCTFail("tratto del gambo di p non misurabile")
+        }
+
+        let bevelOffset = IconRenderer.masterSize / CGFloat(size)
+        let measuredHeight = Double(lavoroBounds.height) - Double(stroke) - Double(bevelOffset)
+        let measuredWidth = Double(lavoroBounds.width) - Double(stroke)
+
+        XCTAssertEqual(measuredHeight, IconGeometry.pillHeight * 0.48, accuracy: 2,
+                       "altezza lettera ≈ 0.48 della pillola")
+        XCTAssertEqual(measuredWidth, measuredHeight * 0.82, accuracy: 2,
+                       "larghezza lettera ≈ 0.82 dell'altezza")
+        XCTAssertEqual(Double(stroke), measuredHeight * 0.21, accuracy: 2,
+                       "tratto lettera ≈ 0.21 dell'altezza")
     }
 
     func testK96PulseInterpolatesBothStopsAndKeepsKnobFixed() {
@@ -193,6 +221,61 @@ final class IconRendererTests: XCTestCase {
                                          personaleTop: DockIconPalette.personaleTop,
                                          personaleBottom: DockIconPalette.personaleBottom)
         XCTAssertGreaterThanOrEqual(minimum, 4.5)
+    }
+
+    private struct LetterMask {
+        let width: Int
+        let height: Int
+        let bits: [Bool]
+
+        func contains(x: Int, y: Int) -> Bool {
+            bits[y * width + x]
+        }
+    }
+
+    private func letterMask(_ request: IconRenderRequest, threshold: Int = 8) -> LetterMask? {
+        var plainRequest = request
+        plainRequest.letter = nil
+        guard let filled = renderedBuffer(request), let plain = renderedBuffer(plainRequest) else {
+            return nil
+        }
+        var bits = [Bool](repeating: false, count: filled.width * filled.height)
+        for y in 0..<filled.height {
+            for x in 0..<filled.width {
+                let offset = ((filled.height - 1 - y) * filled.width + x) * 4
+                let delta = (0..<3).map { channel in
+                    abs(Int(filled.bytes[offset + channel]) - Int(plain.bytes[offset + channel]))
+                }.max() ?? 0
+                bits[y * filled.width + x] = delta >= threshold
+            }
+        }
+        return LetterMask(width: filled.width, height: filled.height, bits: bits)
+    }
+
+    private func bounds(of mask: LetterMask) -> (width: Int, height: Int)? {
+        var minX = Int.max
+        var maxX = Int.min
+        var minY = Int.max
+        var maxY = Int.min
+        for y in 0..<mask.height {
+            for x in 0..<mask.width where mask.contains(x: x, y: y) {
+                minX = min(minX, x)
+                maxX = max(maxX, x)
+                minY = min(minY, y)
+                maxY = max(maxY, y)
+            }
+        }
+        guard minX <= maxX, minY <= maxY else { return nil }
+        return (maxX - minX + 1, maxY - minY + 1)
+    }
+
+    private func runWidth(in mask: LetterMask, y: Int, startingAt x: Int) -> Int? {
+        guard mask.contains(x: x, y: y) else { return nil }
+        var left = x
+        var right = x
+        while left > 0 && mask.contains(x: left - 1, y: y) { left -= 1 }
+        while right < mask.width - 1 && mask.contains(x: right + 1, y: y) { right += 1 }
+        return right - left + 1
     }
 
     private static func minimumDeltaE(busyTop: IconColor,
